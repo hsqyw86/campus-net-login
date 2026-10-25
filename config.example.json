@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "profile_name": "示例大学 · 校园网",
+  "preflight": {
+    "url": "http://10.21.1.1/",
+    "method": "GET",
+    "capture_query": true,
+    "capture_regex": [],
+    "timeout": 8
+  },
+  "login": {
+    "method": "POST",
+    "url": "http://10.21.1.1/eportal/InterFace.do?method=login",
+    "content_type": "form",
+    "fields": {
+      "userId": "{username}",
+      "password": "{password}",
+      "service": "default",
+      "operatorPwd": "",
+      "operatorUserId": "",
+      "validcode": "",
+      "passwordEncrypt": "false"
+    },
+    "body": "",
+    "headers": {
+      "X-Requested-With": "XMLHttpRequest",
+      "Accept": "*/*",
+      "Accept-Language": "zh-CN,zh;q=0.9"
+    },
+    "password_template": "{password}",
+    "escape_form": true,
+    "insecure_tls": false,
+    "timeout": 10
+  },
+  "expect": {
+    "json_path": "result",
+    "json_equals": "success",
+    "success_keywords": ["success", "登录成功", "认证成功", "认证通过"],
+    "failure_keywords": ["密码错误", "认证失败", "登录失败", "用户名或密码", "账号或密码", "已欠费", "被禁用"],
+    "status_ok": [200]
+  },
+  "verify": {
+    "enabled": true,
+    "url": "http://connect.rom.miui.com/generate_204",
+    "expect_status": 204,
+    "timeout": 6
+  },
+  "retry": {
+    "attempts": 2,
+    "interval": 2.0
+  },
+  "network": {
+    "wait_timeout": 90,
+    "wait_interval": 2.0
+  },
+  "ui": {
+    "notify_on_success": false,
+    "notify_on_failure": true
+  }
+}

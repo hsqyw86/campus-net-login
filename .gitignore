@@ -1,0 +1,11 @@
+# 运行时生成的文件（不要提交）
+__pycache__/
+*.pyc
+logs/
+config.json
+credentials.dat
+state.json
+python_path.txt
+custom_hook.py
+tests/_test_state.json
+tests/tmp*/
