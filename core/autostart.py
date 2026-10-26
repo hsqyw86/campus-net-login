@@ -110,7 +110,7 @@ def _make_lnk(lnk_path: str, target: str, arguments: str, workdir: str, descript
         with open(vbs, "w", encoding="utf-16") as fh:
             fh.write(script)
         proc = subprocess.run(
-            [cscript, "//nologo", "//B", vbs],
+            [cscript, "//nologo", vbs],
             capture_output=True,
             text=True,
             errors="replace",
@@ -118,7 +118,14 @@ def _make_lnk(lnk_path: str, target: str, arguments: str, workdir: str, descript
         )
         if proc.returncode != 0 or not os.path.exists(lnk_path):
             detail = " ".join(filter(None, [(proc.stderr or "").strip(), (proc.stdout or "").strip()]))
-            raise OSError(f"创建快捷方式失败：{detail[:800] or 'cscript 没有返回信息'}")
+            try:
+                seen = sorted(os.listdir(folder))[:8]
+            except OSError:
+                seen = []
+            raise OSError(
+                f"创建快捷方式失败：返回码 {proc.returncode}，{detail[:600] or '无输出'}；"
+                f"目标 {lnk_path!r}；目录里现有 {seen}"
+            )
     finally:
         try:
             os.remove(vbs)
