@@ -135,20 +135,36 @@ def _make_lnk(lnk_path: str, target: str, arguments: str, workdir: str, descript
 
 
 def create_desktop_shortcut(name: str = SHORTCUT_NAME, folder: str | None = None) -> str:
-    """在桌面创建指向「一键登录.vbs」的快捷方式，返回 .lnk 路径。"""
+    """在桌面创建指向「一键登录.vbs」的快捷方式，返回 .lnk 路径。
+
+    中文名在中文 Windows 上没问题；个别英文系统（WScript.Shell 走 ANSI 代码页）
+    存不了非 ASCII 文件名，这时自动退回 ASCII 名，不至于让功能整个失败。
+    """
     target_vbs = os.path.join(paths.ROOT, "一键登录.vbs")
     if not os.path.exists(target_vbs):
         raise FileNotFoundError(f"找不到启动器：{target_vbs}")
     wscript = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "wscript.exe")
-    lnk_path = os.path.join(folder or desktop_dir(), f"{name}.lnk")
-    return _make_lnk(
-        lnk_path,
-        wscript,
-        f'"{target_vbs}"',
-        paths.ROOT,
-        "双击登录校园网",
-        icon=paths.PYTHONW_EXE,
-    )
+    folder = folder or desktop_dir()
+    try:
+        return _make_lnk(
+            os.path.join(folder, f"{name}.lnk"),
+            wscript,
+            f'"{target_vbs}"',
+            paths.ROOT,
+            "双击登录校园网",
+            icon=paths.PYTHONW_EXE,
+        )
+    except OSError:
+        if name.isascii():
+            raise
+        return _make_lnk(
+            os.path.join(folder, "CampusNetLogin.lnk"),
+            wscript,
+            f'"{target_vbs}"',
+            paths.ROOT,
+            "CampusNet one-click login",
+            icon=paths.PYTHONW_EXE,
+        )
 
 
 def remove_desktop_shortcut(name: str = SHORTCUT_NAME) -> bool:
