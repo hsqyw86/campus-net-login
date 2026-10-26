@@ -284,25 +284,40 @@ def test_autostart_state():
     expect("开机自动登录" in text, f"describe 输出不对：{text}")
 
 
+def _read_lnk_fields(lnk: str, folder: str) -> str:
+    """用 cscript 读回 .lnk 的目标/参数/工作目录。
+
+    脚本按 UTF-16LE+BOM 存盘、结果也存成 UTF-16，绕开控制台代码页：
+    英文系统上中文内容不会被转成「????」。
+    """
+    out_file = os.path.join(folder, "_lnk_readback.txt")
+    vbs = os.path.join(folder, "_lnk_readback.vbs")
+    quote = lambda text: text.replace('"', '""')  # noqa: E731
+    script = (
+        'Set sh = CreateObject("WScript.Shell")\r\n'
+        f'Set s = sh.CreateShortcut("{quote(lnk)}")\r\n'
+        'Set fso = CreateObject("Scripting.FileSystemObject")\r\n'
+        f'Set f = fso.CreateTextFile("{quote(out_file)}", True, True)\r\n'
+        "f.WriteLine s.TargetPath\r\n"
+        "f.WriteLine s.Arguments\r\n"
+        "f.WriteLine s.WorkingDirectory\r\n"
+        "f.Close\r\n"
+    )
+    with open(vbs, "w", encoding="utf-16") as fh:
+        fh.write(script)
+    cscript = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "cscript.exe")
+    subprocess.run([cscript, "//nologo", "//B", vbs], capture_output=True, timeout=60)
+    with open(out_file, encoding="utf-16") as fh:
+        return fh.read()
+
+
 def test_shortcut_creation():
     """真的生成一个 .lnk，再读回来核对目标与参数。"""
     with tmpdir() as tmp:
         lnk = autostart.create_desktop_shortcut(name="冒烟测试", folder=tmp)
         expect(os.path.exists(lnk), f"快捷方式没生成：{lnk}")
-        script = (
-            "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('" + lnk + "'); "
-            "Write-Output ($s.TargetPath + '|' + $s.Arguments + '|' + $s.WorkingDirectory)"
-        )
-        proc = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=60,
-        )
-        out = (proc.stdout or "").strip()
-        expect("wscript.exe" in out.lower(), f"快捷方式目标不对：{out} {proc.stderr[:200]}")
+        out = _read_lnk_fields(lnk, tmp).strip()
+        expect("wscript.exe" in out.lower(), f"快捷方式目标不对：{out}")
         expect("一键登录.vbs" in out, f"快捷方式参数没指向启动器：{out}")
         expect(ROOT.lower() in out.lower(), f"工作目录不对：{out}")
 

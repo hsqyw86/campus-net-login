@@ -9,9 +9,7 @@
 
 from __future__ import annotations
 
-import base64
 import os
-import re
 import subprocess
 import winreg
 
@@ -83,49 +81,49 @@ def startup_dir() -> str:
     return os.path.join(appdata, "Microsoft", "Windows", "Start Menu", "Programs", "Startup")
 
 
-def _ps_escape(text: str) -> str:
-    return text.replace("'", "''")
-
-
-def _clean_ps_output(text: str) -> str:
-    """PowerShell 往 stderr 写东西时会带 CLIXML 包装，这里剥掉，只留人话。"""
-    if "#< CLIXML" in text:
-        pieces = re.findall(r'<S S="Error">(.*?)</S>', text, flags=re.S)
-        if pieces:
-            text = " ".join(pieces)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = text.replace("_x000D__x000A_", " ").replace("\r", " ").replace("\n", " ")
-    return re.sub(r"\s+", " ", text).strip()
+def _vbs_quote(text: str) -> str:
+    return text.replace('"', '""')
 
 
 def _make_lnk(lnk_path: str, target: str, arguments: str, workdir: str, description: str, icon: str | None = None) -> str:
     """用系统自带的 WScript.Shell 生成 .lnk（不依赖 pywin32）。
 
-    脚本用 -EncodedCommand（Base64 的 UTF-16LE）传给 PowerShell：
-    这样中文快捷方式名在英文系统 / 任意控制台代码页下都不会变成「????.lnk」。
+    写法是「临时 .vbs + cscript」，脚本按 UTF-16LE+BOM 存盘：
+    WSH 认这个编码，所以中文快捷方式名在英文系统、任意控制台代码页下都不会变成「????.lnk」。
     """
     icon = icon or target
-    script = f"""$ErrorActionPreference = 'Stop'
-$sh = New-Object -ComObject WScript.Shell
-$lnk = $sh.CreateShortcut('{_ps_escape(lnk_path)}')
-$lnk.TargetPath = '{_ps_escape(target)}'
-$lnk.Arguments = '{_ps_escape(arguments)}'
-$lnk.WorkingDirectory = '{_ps_escape(workdir)}'
-$lnk.IconLocation = '{_ps_escape(icon)},0'
-$lnk.Description = '{_ps_escape(description)}'
-$lnk.WindowStyle = 7
-$lnk.Save()
-"""
-    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-    proc = subprocess.run(
-        ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
-        capture_output=True,
-        text=True,
-        timeout=60,
+    script = (
+        'Set sh = CreateObject("WScript.Shell")\r\n'
+        f'Set lnk = sh.CreateShortcut("{_vbs_quote(lnk_path)}")\r\n'
+        f'lnk.TargetPath = "{_vbs_quote(target)}"\r\n'
+        f'lnk.Arguments = "{_vbs_quote(arguments)}"\r\n'
+        f'lnk.WorkingDirectory = "{_vbs_quote(workdir)}"\r\n'
+        f'lnk.IconLocation = "{_vbs_quote(icon)},0"\r\n'
+        f'lnk.Description = "{_vbs_quote(description)}"\r\n'
+        "lnk.WindowStyle = 7\r\n"
+        "lnk.Save\r\n"
     )
-    if proc.returncode != 0 or not os.path.exists(lnk_path):
-        detail = _clean_ps_output(proc.stderr or proc.stdout or "")
-        raise OSError(f"创建快捷方式失败：{detail[:800] or 'PowerShell 没有返回信息'}")
+    folder = os.path.dirname(lnk_path) or "."
+    vbs = os.path.join(folder, f"_mklnk_{os.getpid()}.vbs")
+    cscript = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "cscript.exe")
+    try:
+        with open(vbs, "w", encoding="utf-16") as fh:
+            fh.write(script)
+        proc = subprocess.run(
+            [cscript, "//nologo", "//B", vbs],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=60,
+        )
+        if proc.returncode != 0 or not os.path.exists(lnk_path):
+            detail = " ".join(filter(None, [(proc.stderr or "").strip(), (proc.stdout or "").strip()]))
+            raise OSError(f"创建快捷方式失败：{detail[:800] or 'cscript 没有返回信息'}")
+    finally:
+        try:
+            os.remove(vbs)
+        except OSError:
+            pass
     return lnk_path
 
 
