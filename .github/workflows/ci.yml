@@ -23,7 +23,7 @@ jobs:
           python-version: ${{ matrix.python }}
 
       - name: 语法编译（全部源码）
-        run: python -m py_compile login.py launcher.pyw setup.pyw core/*.py gui/*.py tests/*.py
+        run: python -m compileall -q login.py launcher.pyw setup.pyw core gui tests
 
       - name: 运行测试（29 项，含本地假认证服务器）
         run: python tests/run_tests.py
