@@ -31,7 +31,16 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-from core import autostart, config as config_mod, net, paths, portal, runner, secrets  # noqa: E402
+from core import (  # noqa: E402
+    autostart,
+    config as config_mod,
+    doctor,
+    net,
+    paths,
+    portal,
+    runner,
+    secrets,
+)
 
 log = logging.getLogger("campusnet")
 
@@ -64,7 +73,7 @@ def _need_config(path: str | None):
         return config_mod.load(path)
     except config_mod.ConfigError as exc:
         print(f"[配置有误] {exc}")
-        print("请先运行「设置向导」，或在项目目录运行：  python 设置向导.pyw")
+        print("请先运行「设置向导」：双击 设置向导.vbs（或运行 python setup.pyw）")
         raise SystemExit(2)
 
 
@@ -205,44 +214,16 @@ def cmd_autostart(args) -> int:
 
 
 def cmd_doctor(args) -> int:
-    ok = True
     print("=== 自检 ===")
-    print(f"Python：{sys.version.split()[0]}  ({sys.executable})")
-
-    try:
-        secrets.save("自检账号", "自检密码", path=os.path.join(paths.LOG_DIR, "_selftest.dat"))
-        back = secrets.load(os.path.join(paths.LOG_DIR, "_selftest.dat"))
-        good = back.username == "自检账号" and back.password == "自检密码"
-        os.remove(os.path.join(paths.LOG_DIR, "_selftest.dat"))
-        print(f"DPAPI 加密存取：{'✓ 正常' if good else '✗ 回读不一致'}")
-        ok = ok and good
-    except Exception as exc:  # noqa: BLE001
-        print(f"DPAPI 加密存取：✗ {type(exc).__name__}: {exc}")
-        ok = False
-
-    try:
-        cfg = config_mod.load(args.config)
-        problems = config_mod.validate(cfg, strict=False)
-        print(f"配置文件：{'✓ 完整' if not problems else '✗ ' + '；'.join(problems)}")
-        ok = ok and not problems
-        rendered = portal.build_request(cfg, portal.build_variables(cfg, "test", "test"))
-        print(f"请求模板渲染：✓ {rendered.method} {rendered.url[:80]}")
-    except Exception as exc:  # noqa: BLE001
-        print(f"请求模板渲染：✗ {type(exc).__name__}: {exc}")
-        ok = False
-
-    try:
-        creds = secrets.load()
-        print(f"已保存账号：{'✓ ' + creds.username[:2] + '***' if creds.complete else '✗ 未保存'}")
-    except Exception as exc:  # noqa: BLE001
-        print(f"已保存账号：✗ {exc}")
-
-    online, why = net.online()
-    print(f"联网探测：{'✓ ' if online else '✗ '}{why}")
-    print(f"开机自启：{'已开启' if autostart.is_enabled() else '未开启'}")
-    print(f"日志文件：{paths.LOG_FILE}")
-    print("=== 自检%s ===" % ("通过" if ok else "发现问题（见上）"))
-    return 0 if ok else 1
+    checks = doctor.run(args.config, probe=not args.no_network)
+    for item in checks:
+        print(item.line())
+    bad = doctor.problems(checks)
+    if bad:
+        print(f"=== 自检发现问题（{len(bad)} 项，见上） ===")
+        return 1
+    print("=== 自检通过 ===")
+    return 0
 
 
 # ------------------------------------------------------------------ 入口
@@ -264,7 +245,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("check", help="查看状态").set_defaults(func=cmd_check)
     sub.add_parser("preview", help="预览将发出的请求").set_defaults(func=cmd_preview)
     sub.add_parser("set-credentials", help="交互式保存账号密码").set_defaults(func=cmd_set_credentials)
-    sub.add_parser("doctor", help="自检").set_defaults(func=cmd_doctor)
+    p_doctor = sub.add_parser("doctor", help="自检（加密 / 配置 / 模板 / 网络）")
+    p_doctor.add_argument("--no-network", action="store_true", help="跳过联网探测")
+    p_doctor.set_defaults(func=cmd_doctor, no_network=False)
 
     p_auto = sub.add_parser("autostart", help="开机自动登录开关")
     p_auto.add_argument("action", choices=["on", "off", "status"])

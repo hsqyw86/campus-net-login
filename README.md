@@ -1,9 +1,17 @@
 # 校园网一键登录
 
+[![tests](https://github.com/hsqyw86/campus-net-login/actions/workflows/ci.yml/badge.svg)](https://github.com/hsqyw86/campus-net-login/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![python](https://img.shields.io/badge/python-3.10%2B-blue)](#环境要求)
+
 > 双击一个图标，自动完成校园网网页认证（Portal 登录）。
 > 不绑定任何厂商：把你浏览器里那次登录请求「复制粘贴」进来就能用。
 
 一句话原理：**先录下网页登录时发出的那条请求，之后让程序照着重发一遍。**
+
+纯 Python 标准库实现，**不需要 pip 安装任何东西**；账号密码用 Windows DPAPI 加密存在本机。
+
+<img src="docs/screenshot-setup.png" width="700" alt="设置向导：粘贴一次登录请求，其余自动填好">
 
 ---
 
@@ -23,6 +31,17 @@
 | 发请求 | 按模板拼出 URL / 请求头 / 表单字段，填入账号密码 | `login` |
 | 判结果 | 按 JSON 字段或关键字判断成功 / 失败 | `expect` |
 | 复核 | 真的能上网了才算成功（可选） | `verify` |
+
+---
+
+## 环境要求
+
+| 项 | 说明 |
+| --- | --- |
+| 系统 | Windows 10 / 11（用到 DPAPI 加密与注册表自启） |
+| Python | 3.10 或更高，**无需 pip 安装任何包**；安装时勾选 `Add python.exe to PATH` |
+| 权限 | 不需要管理员权限（开机自启写在 `HKCU` 当前用户下） |
+| 找 Python | `.vbs` 启动器会先读 `python_path.txt`，再自动搜索 `%LOCALAPPDATA%\Programs\Python\Python*\pythonw.exe`，所以装到用户目录也能用 |
 
 ---
 
@@ -52,6 +71,8 @@
 4. 点 **测试登录**，下方「运行信息」会显示结果。
 5. 成功后点 **保存设置**（密码会加密存储）。
 
+> 配好之后如果哪天登不上，点右下角 **自检**：它会检查 Python、加密存储、配置、请求模板（会真的走一次预跳转取参数）、账号、网络、开机自启，并把问题直接告诉你怎么修。
+
 ### 第 3 步：以后就靠双击
 
 - 点 **创建桌面快捷方式** → 桌面出现「校园网一键登录」，以后双击它即可（不弹黑框，成功时右下角飘一条提示）。
@@ -80,12 +101,16 @@ campus-net-login/
 │   ├── curlparse.py        ← cURL 解析
 │   ├── secrets.py          ← DPAPI 加密存储
 │   ├── autostart.py        ← 开机自启、桌面快捷方式
+│   ├── doctor.py           ← 自检（把「为什么登不上」拆成可项检查）
 │   ├── runner.py           ← 「已联网就跳过 → 等网关 → 登录」流程
 │   ├── config.py           ← 配置读写与校验
 │   ├── net.py              ← 联网探测、本机 IP
 │   └── paths.py            ← 路径与日志位置
 ├── gui/setup_app.py        ← 设置向导界面
-└── tests/                  ← 测试（含本地假认证服务器）
+├── docs/screenshot-setup.png
+├── .github/workflows/ci.yml ← 每次提交自动跑 28 项测试
+├── tests/                  ← 测试（含本地假认证服务器）
+└── LICENSE                 ← MIT
 ```
 
 整个文件夹可以随便移动 / 拷到 U 盘（`credentials.dat` 换机器就解不开了，需要重新存一次密码）。
@@ -174,9 +199,34 @@ python login.py preview             :: 打印将要发出的请求（密码打�
 python login.py set-credentials     :: 交互式重存账号密码
 python login.py autostart on|off|status
 python login.py doctor              :: 自检（加密、配置、模板、网络）
+python login.py doctor --no-network :: 自检但不联网（离线时用）
 ```
 
 退出码：`0` 成功或已联网 / `1` 登录失败 / `2` 配置或账号问题 / `3` 网络未就绪。
+
+---
+
+## 自检：登不上时先跑这个
+
+图形界面的 **自检** 按钮和 `python login.py doctor` 是同一套检查，逐项告诉你卡在哪：
+
+```
+=== 自检 ===
+Python：✓ 3.14.0  (C:\Users\you\AppData\Local\Programs\Python\Python314\python.exe)
+DPAPI 加密存取：✓ 正常
+配置文件：✓ config.json
+请求模板渲染：✓ POST http://10.21.1.1/eportal/InterFace.do?method=login
+已保存账号：✓ 20***
+联网探测：✓ 已联网
+开机自启：未开启
+日志文件：C:\...\campus-net-login\logs\login.log
+=== 自检通过 ===
+```
+
+其中**请求模板渲染**会真的走一次「预跳转」，所以能提前暴露「`{token}` 取不到」「认证页打不开」这类问题——
+如果只是当前不在校园网内，它只标成提示而不会误报成配置错误。账号只显示前两位，日志里也不会有密码。
+
+有任何一项是 `✗` 时，末尾会列出「自检发现问题（N 项）」，每条都带修复建议，退出码为 `1`。
 
 ---
 
@@ -222,6 +272,7 @@ def transform_password(username, password, variables) -> str:
 | 提示「密码错误」但网页能登录 | 密码不是明文提交的：确认「密码处理」是否该用 `{md5}`；仍不行就上 `custom_hook.py` |
 | 登录返回成功但提示联网没通过 | `verify` 地址被学校拦了：把它改成 `http://www.baidu.com` 并把期望状态改成 `200`，或直接关掉 `verify.enabled` |
 | 双击没反应 | 看 `logs/login.log`；若提示找不到 Python，重新运行一次设置向导（它会记录 Python 路径） |
+| 提示「配置文件不是合法 JSON」 | 手改过 `config.json`：多半是记事本存成了 ANSI/GBK。用 UTF-8 保存，或直接让设置向导重存一次 |
 | 开机没自动登录 | `python login.py autostart status` 看是否写入；若被组策略限制，会退化到「启动」文件夹里的快捷方式 |
 | 每次都要重新登录 | 校园网本身有会话时长限制；可把 `retry` 用在计划任务里定时跑（本工具默认只做「一次登录」） |
 
@@ -230,13 +281,15 @@ def transform_password(username, password, variables) -> str:
 ## 测试
 
 ```bat
-python tests\run_tests.py     :: 25 项：cURL 解析、模板、加密、判定、端到端登录（本地假服务器）
+python tests\run_tests.py     :: 29 项：cURL 解析、模板、加密、判定、自检、端到端登录（本地假服务器）
 python tests\gui_smoke.py     :: 界面冒烟：控件、布局、cURL 导入、明文拦截
 python tests\mock_portal.py 8099   :: 单独起一个假认证服务器手动玩
 ```
 
 `tests/mock_portal.py` 是一个模拟的 Portal 认证服务器（预跳转下发 Cookie 和 token、校验 md5 密码、返回 JSON），
 端到端测试就是拿它跑通的，不需要真的连校园网。
+
+GitHub Actions（`.github/workflows/ci.yml`）会在每次提交时用 Python 3.10 / 3.13 各跑一遍：语法编译 → 29 项测试 → 命令行冒烟。
 
 ---
 
@@ -246,3 +299,16 @@ python tests\mock_portal.py 8099   :: 单独起一个假认证服务器手动玩
 - 登录页带**图形验证码**的用不了（需要识别验证码，本工具不做）。
 - 学校强制改密码、或密码策略变化后，需要重新保存密码。
 - 默认只做「一次登录」，没有做「断网自动重连」的常驻监控（想加的话，把 `login.py login --force` 丢进任务计划程序每 10 分钟跑一次即可）。
+
+---
+
+## English
+
+One-click campus network (captive portal) login for Windows — vendor-agnostic.
+
+Record the login request your browser sends (DevTools → Network → right-click → *Copy as cURL*), paste it into the setup
+wizard, and the tool replays it on demand: preflight redirect (to harvest `userip` / `token` / session cookies), login POST,
+JSON or keyword verdict, optional connectivity check. Credentials are encrypted with Windows DPAPI (per Windows account,
+machine-bound). Add a desktop shortcut or autostart and it just works.
+
+Pure Python 3.10+ standard library — no `pip install`, no admin rights. MIT licensed.

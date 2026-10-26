@@ -473,6 +473,17 @@ def _capture_from_query(url: str) -> dict:
     return {k: v for k, v in urllib.parse.parse_qsl(query, keep_blank_values=True)}
 
 
+def preflight_variables(cfg: dict, username: str = "", password: str = "") -> dict:
+    """跑一次「登录前跳转」，返回补齐了 token/userip 等参数的变量表（自检、预览用）。
+
+    与真正登录时完全同一套预跳转逻辑，所以自检能验证到「参数到底取不取得到」。
+    """
+    variables = build_variables(cfg, username, password)
+    session = Session(insecure=bool((cfg.get("login") or {}).get("insecure_tls")))
+    _preflight(cfg, session, variables)
+    return variables
+
+
 def _preflight(cfg: dict, session: Session, variables: dict) -> dict:
     pre = cfg.get("preflight") or {}
     raw_url = (pre.get("url") or "").strip()

@@ -1,0 +1,40 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Python ${{ matrix.python }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: 语法编译（全部源码）
+        run: python -m py_compile login.py launcher.pyw setup.pyw core/*.py gui/*.py tests/*.py
+
+      - name: 运行测试（29 项，含本地假认证服务器）
+        run: python tests/run_tests.py
+        env:
+          PYTHONIOENCODING: utf-8
+
+      - name: 命令行冒烟（不连校园网，只看参数与退出码）
+        run: |
+          python login.py --help
+          python login.py doctor --no-network
+          python login.py preview
+        continue-on-error: true
+        env:
+          PYTHONIOENCODING: utf-8

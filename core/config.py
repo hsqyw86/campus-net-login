@@ -105,10 +105,13 @@ def load(path: str | None = None) -> dict:
     if not os.path.exists(path):
         raise ConfigError(f"找不到配置文件：{paths.rel(path)}（请先运行「设置向导」）")
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        # utf-8-sig：记事本存成「UTF-8 带 BOM」时也能读，避免莫名其妙的 JSON 报错
+        with open(path, "r", encoding="utf-8-sig") as fh:
             raw = json.load(fh)
     except json.JSONDecodeError as exc:
-        raise ConfigError(f"配置文件不是合法 JSON：{exc}") from exc
+        raise ConfigError(f"配置文件不是合法 JSON：{exc}（第 {exc.lineno} 行第 {exc.colno} 列附近）") from exc
+    except UnicodeDecodeError as exc:
+        raise ConfigError("配置文件编码不对：请用 UTF-8 保存（记事本里选「UTF-8」而不是 ANSI）") from exc
     except OSError as exc:
         raise ConfigError(f"读取配置失败：{exc}") from exc
     cfg = normalize(raw)
@@ -170,9 +173,9 @@ def validate(cfg: dict, strict: bool = True) -> list[str]:
 
 def load_state() -> dict:
     try:
-        with open(paths.STATE_FILE, "r", encoding="utf-8") as fh:
+        with open(paths.STATE_FILE, "r", encoding="utf-8-sig") as fh:
             return json.load(fh)
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return {}
 
 

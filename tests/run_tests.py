@@ -28,7 +28,16 @@ if ROOT not in sys.path:
 # 让测试不要写到项目根目录的真实配置文件 / 状态文件
 os.environ.setdefault("CAMPUSNET_STATE", os.path.join(HERE, "_test_state.json"))
 
-from core import autostart, config as config_mod, curlparse, paths, portal, runner, secrets  # noqa: E402
+from core import (  # noqa: E402
+    autostart,
+    config as config_mod,
+    curlparse,
+    doctor,
+    paths,
+    portal,
+    runner,
+    secrets,
+)
 from tests.mock_portal import ACCOUNTS, MockPortal  # noqa: E402
 
 USERNAME = "20230001"
@@ -241,6 +250,27 @@ def test_config_validation():
         pass
     else:
         raise AssertionError("strict 模式没抛异常")
+
+
+def test_config_bom_and_gbk():
+    """记事本存成 UTF-8 带 BOM 要能读；存成 GBK 要给能看懂的提示。"""
+    with tmpdir() as tmp, MockPortal() as srv:
+        cfg = make_cfg(srv.base_url)
+        bom_path = os.path.join(tmp, "bom.json")
+        with open(bom_path, "w", encoding="utf-8-sig") as fh:  # 模拟记事本「UTF-8 带 BOM」
+            json.dump(cfg, fh, ensure_ascii=False)
+        loaded = config_mod.load(bom_path)
+        expect(loaded["login"]["url"] == cfg["login"]["url"], "带 BOM 的配置读出来不对")
+
+        gbk_path = os.path.join(tmp, "gbk.json")
+        with open(gbk_path, "w", encoding="gbk") as fh:  # 模拟存成 ANSI/GBK
+            json.dump(cfg, fh, ensure_ascii=False)
+        try:
+            config_mod.load(gbk_path)
+        except config_mod.ConfigError as exc:
+            expect("UTF-8" in str(exc), f"编码错误提示不清楚：{exc}")
+        else:
+            raise AssertionError("GBK 文件应该报编码错误")
 
 
 def test_autostart_command():
@@ -456,6 +486,51 @@ def test_cli_check():
         expect("登录地址" in proc.stdout, f"check 输出不全：{proc.stdout}")
 
 
+# ------------------------------------------------------------------ 自检
+
+def test_doctor_all_ok():
+    with MockPortal() as srv, tmpdir() as tmp:
+        cfg_path = os.path.join(tmp, "config.json")
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            json.dump(make_cfg(srv.base_url), fh, ensure_ascii=False)
+        checks = doctor.run(cfg_path, probe=True)
+        titles = [c.title for c in checks]
+        expect("Python" in titles and "配置文件" in titles, f"自检项不全：{titles}")
+        expect(all(c.status in (doctor.OK, doctor.BAD, doctor.INFO) for c in checks), "出现了未知状态")
+        by_title = {c.title: c for c in checks}
+        expect(by_title["Python"].status == doctor.OK, "Python 检查不该失败")
+        expect(by_title["配置文件"].status == doctor.OK, f"配置读取失败：{by_title['配置文件'].detail}")
+        # 配置里用了 {token}，要靠预跳转才拿得到 —— 自检应该自动跑一次预跳转而不是误报
+        expect(by_title["请求模板渲染"].status == doctor.OK, f"模板渲染失败：{by_title['请求模板渲染'].detail}")
+        expect("POST" in by_title["请求模板渲染"].detail, "模板渲染结果里没有请求方法")
+        expect(by_title["联网探测"].status in (doctor.OK, doctor.INFO), "联网探测不该判为失败")
+        expect(doctor.problems(checks) == [c for c in checks if c.status == doctor.BAD], "problems 过滤不对")
+        expect("✓" in by_title["Python"].line(), "输出行缺对勾")
+
+
+def test_doctor_offline_preflight():
+    """认证页连不上时，不该把配置判成错的（否则用户会被误导）。"""
+    with tmpdir() as tmp:
+        cfg_path = os.path.join(tmp, "config.json")
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            json.dump(make_cfg("http://127.0.0.1:9"), fh, ensure_ascii=False)  # 该端口没人监听
+        checks = doctor.run(cfg_path, probe=True)
+        by_title = {c.title: c for c in checks}
+        expect(by_title["请求模板渲染"].status == doctor.INFO, f"离线时模板检查应为提示项：{by_title['请求模板渲染'].detail}")
+        expect("配置文件" not in [c.title for c in doctor.problems(checks)], "配置本身没问题，不该报错")
+
+
+def test_doctor_missing_config():
+    checks = doctor.run(os.path.join(HERE, "no_such_config.json"), probe=False)
+    bad = doctor.problems(checks)
+    titles = [c.title for c in bad]
+    expect("配置文件" in titles, f"缺配置时没报出来：{titles}")
+    expect("请求模板渲染" in titles, "配置不可用时模板检查应标记为问题")
+    for item in bad:
+        expect(item.title in doctor.HINT, f"问题项 {item.title} 没有对应的处理建议")
+        expect("✗" in item.line(), "问题项输出缺叉号")
+
+
 # ------------------------------------------------------------------ 入口
 
 def main() -> int:
@@ -471,6 +546,7 @@ def main() -> int:
         ("预览不泄露密码", test_preview_masks_password),
         ("账号密码 DPAPI 加密", test_dpapi_roundtrip),
         ("配置校验", test_config_validation),
+        ("配置：BOM / 编码容错", test_config_bom_and_gbk),
         ("开机自启命令", test_autostart_command),
         ("开机自启状态读取", test_autostart_state),
         ("桌面快捷方式生成", test_shortcut_creation),
@@ -485,6 +561,9 @@ def main() -> int:
         ("流程：强制登录", test_runner_login_with_force),
         ("CLI：login 退出码", test_cli_end_to_end),
         ("CLI：check 输出", test_cli_check),
+        ("自检：全部正常", test_doctor_all_ok),
+        ("自检：认证页连不上时只提示", test_doctor_offline_preflight),
+        ("自检：缺少配置时报问题", test_doctor_missing_config),
     ]
     print(f"Python {sys.version.split()[0]}  项目目录 {ROOT}\n")
     try:

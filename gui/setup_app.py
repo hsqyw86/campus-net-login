@@ -22,7 +22,16 @@ _HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-from core import autostart, config as config_mod, curlparse, net, paths, portal, secrets  # noqa: E402
+from core import (  # noqa: E402
+    autostart,
+    config as config_mod,
+    curlparse,
+    doctor as doctor_mod,
+    net,
+    paths,
+    portal,
+    secrets,
+)
 
 APP_TITLE = "校园网一键登录 · 设置向导"
 FONT = ("Microsoft YaHei UI", 9)
@@ -273,6 +282,7 @@ class SetupApp:
         ttk.Button(actions, text="保存设置", command=self.on_save).pack(side="left", padx=6)
         ttk.Button(actions, text="创建桌面快捷方式", command=self.on_shortcut).pack(side="left", padx=(0, 6))
         ttk.Button(actions, text="检查网络", command=self.on_check_network).pack(side="left", padx=(0, 6))
+        ttk.Button(actions, text="自检", command=self.on_doctor).pack(side="left", padx=(0, 6))
         ttk.Button(actions, text="查看日志", command=self.on_open_log).pack(side="left")
 
         self.autostart_var = tk.BooleanVar(value=False)
@@ -549,6 +559,35 @@ class SetupApp:
                     self.log(f"认证服务器不可达：{target}（可能不在校园网内 / 未连 Wi-Fi）", "err")
             except ValueError:
                 pass
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_doctor(self) -> None:
+        """跑一遍自检，把每条结果打到「运行信息」里（与 login.py doctor 同一套逻辑）。"""
+        if getattr(self, "_doctor_running", False):
+            return
+        self._doctor_running = True
+        self.log("——————————————————")
+        self.log("开始自检：加密存储 / 配置 / 请求模板 / 网络…", "info")
+
+        def work():
+            try:
+                checks = doctor_mod.run(probe=True)
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"✗ 自检出错：{type(exc).__name__}: {exc}", "err")
+                return
+            finally:
+                self._doctor_running = False
+            bad = doctor_mod.problems(checks)
+            for item in checks:
+                tag = {"ok": "ok", "bad": "err", "info": "info"}.get(item.status, "info")
+                self.log(item.line(), tag)
+            if bad:
+                self.log(f"自检发现 {len(bad)} 个问题（见上），对应处理办法：", "warn")
+                for item in bad:
+                    self.log(f"  · {item.title}：{doctor_mod.HINT.get(item.title, '见 README 的「故障排查」')}", "warn")
+            else:
+                self.log("✓ 自检通过：这台机器上可以直接登录。", "ok")
 
         threading.Thread(target=work, daemon=True).start()
 
