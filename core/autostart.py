@@ -9,9 +9,9 @@
 
 from __future__ import annotations
 
+import base64
 import os
 import subprocess
-import tempfile
 import winreg
 
 from . import paths
@@ -87,7 +87,11 @@ def _ps_escape(text: str) -> str:
 
 
 def _make_lnk(lnk_path: str, target: str, arguments: str, workdir: str, description: str, icon: str | None = None) -> str:
-    """用系统自带的 WScript.Shell 生成 .lnk（不依赖 pywin32）。"""
+    """用系统自带的 WScript.Shell 生成 .lnk（不依赖 pywin32）。
+
+    脚本用 -EncodedCommand（Base64 的 UTF-16LE）传给 PowerShell：
+    这样中文快捷方式名在英文系统 / 任意控制台代码页下都不会变成「????.lnk」。
+    """
     icon = icon or target
     script = f"""$ErrorActionPreference = 'Stop'
 $sh = New-Object -ComObject WScript.Shell
@@ -100,24 +104,16 @@ $lnk.Description = '{_ps_escape(description)}'
 $lnk.WindowStyle = 7
 $lnk.Save()
 """
-    fd, ps1 = tempfile.mkstemp(suffix=".ps1", prefix="cnl_lnk_")
-    os.close(fd)
-    try:
-        with open(ps1, "w", encoding="utf-8-sig") as fh:
-            fh.write(script)
-        proc = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", ps1],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        if proc.returncode != 0 or not os.path.exists(lnk_path):
-            raise OSError((proc.stderr or proc.stdout or "创建快捷方式失败").strip()[:400])
-    finally:
-        try:
-            os.remove(ps1)
-        except OSError:
-            pass
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    proc = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if proc.returncode != 0 or not os.path.exists(lnk_path):
+        detail = (proc.stderr or proc.stdout or "创建快捷方式失败").strip()[:400]
+        raise OSError(f"创建快捷方式失败（{detail}）")
     return lnk_path
 
 
