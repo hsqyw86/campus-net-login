@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import subprocess
 import winreg
 
@@ -86,6 +87,17 @@ def _ps_escape(text: str) -> str:
     return text.replace("'", "''")
 
 
+def _clean_ps_output(text: str) -> str:
+    """PowerShell 往 stderr 写东西时会带 CLIXML 包装，这里剥掉，只留人话。"""
+    if "#< CLIXML" in text:
+        pieces = re.findall(r'<S S="Error">(.*?)</S>', text, flags=re.S)
+        if pieces:
+            text = " ".join(pieces)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = text.replace("_x000D__x000A_", " ").replace("\r", " ").replace("\n", " ")
+    return re.sub(r"\s+", " ", text).strip()
+
+
 def _make_lnk(lnk_path: str, target: str, arguments: str, workdir: str, description: str, icon: str | None = None) -> str:
     """用系统自带的 WScript.Shell 生成 .lnk（不依赖 pywin32）。
 
@@ -112,8 +124,8 @@ $lnk.Save()
         timeout=60,
     )
     if proc.returncode != 0 or not os.path.exists(lnk_path):
-        detail = (proc.stderr or proc.stdout or "创建快捷方式失败").strip()[:400]
-        raise OSError(f"创建快捷方式失败（{detail}）")
+        detail = _clean_ps_output(proc.stderr or proc.stdout or "")
+        raise OSError(f"创建快捷方式失败：{detail[:800] or 'PowerShell 没有返回信息'}")
     return lnk_path
 
 
