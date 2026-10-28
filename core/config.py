@@ -69,7 +69,7 @@ DEFAULT_CONFIG: dict = {
     },
     "retry": {"attempts": 2, "interval": 2.0},
     "network": {"wait_timeout": 90, "wait_interval": 2.0},
-    "ui": {"notify_on_success": False, "notify_on_failure": True},
+    "ui": {"notify_on_success": True, "notify_on_failure": True},
 }
 
 
@@ -89,7 +89,11 @@ def default_config() -> dict:
 
 def normalize(raw: dict) -> dict:
     """把用户配置补齐成完整结构，兼容旧版本缺字段。"""
-    return _deep_merge(DEFAULT_CONFIG, raw or {})
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ConfigError(f"配置文件最外层必须是 {{...}} 对象，但现在是一个 {type(raw).__name__}")
+    return _deep_merge(DEFAULT_CONFIG, raw)
 
 
 def config_path() -> str:
@@ -123,46 +127,98 @@ def save(cfg: dict, path: str | None = None) -> str:
     path = path or paths.CONFIG_FILE
     data = normalize(cfg)
     validate(data, strict=False)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, ensure_ascii=False, indent=2)
-        fh.write("\n")
-    os.replace(tmp, path)
+    try:
+        paths.write_json_atomic(path, data)
+    except OSError as exc:
+        raise ConfigError(f"写入配置失败：{exc}") from exc
     return path
+
+
+_SECTIONS = ("preflight", "login", "expect", "verify", "retry", "network", "ui")
+
+
+def _as_dict(cfg: dict, name: str, problems: list[str]) -> dict:
+    """取一个配置段；类型不对就记一条问题并返回空字典（不让后面 .get 崩掉）。"""
+    value = cfg.get(name)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        problems.append(f"{name} 必须是一个 {{...}} 对象，现在是 {type(value).__name__}")
+        return {}
+    return value
+
+
+def _as_number(section: dict, key: str, label: str, problems: list[str], *, minimum=None) -> float | None:
+    if key not in section or section[key] in ("", None):
+        return None
+    try:
+        number = float(section[key])
+    except (TypeError, ValueError):
+        problems.append(f"{label} 必须是数字（现在写的是 {section[key]!r}）")
+        return None
+    if minimum is not None and number < minimum:
+        problems.append(f"{label} 不能小于 {minimum}")
+        return None
+    return number
 
 
 def validate(cfg: dict, strict: bool = True) -> list[str]:
     """返回问题列表；strict=True 时发现问题直接抛 ConfigError。"""
     problems: list[str] = []
-    login = cfg.get("login") or {}
-    url = (login.get("url") or "").strip()
+    if not isinstance(cfg, dict):
+        problems.append("配置最外层必须是对象")
+        if strict:
+            raise ConfigError("；".join(problems))
+        return problems
+
+    for name in _SECTIONS:
+        _as_dict(cfg, name, problems)
+
+    login = _as_dict(cfg, "login", problems)
+    fields = login.get("fields") or {}
+    if not isinstance(fields, dict):
+        problems.append("login.fields 必须是一个 {...} 对象")
+        fields = {}
+    body = login.get("body") or ""
+    if not isinstance(body, str):
+        problems.append("login.body 必须是字符串")
+        body = ""
+    url = str(login.get("url") or "").strip()
     if not url:
         problems.append("未填写登录地址（login.url）")
     elif not (url.startswith("http://") or url.startswith("https://")):
         problems.append("登录地址必须以 http:// 或 https:// 开头")
-    method = (login.get("method") or "POST").upper()
+    method = str(login.get("method") or "POST").upper()
     if method not in ("GET", "POST", "PUT", "PATCH"):
         problems.append(f"不支持的请求方法：{method}")
 
-    pre = cfg.get("preflight") or {}
-    pre_url = (pre.get("url") or "").strip()
+    pre = _as_dict(cfg, "preflight", problems)
+    pre_url = str(pre.get("url") or "").strip()
     if pre_url and not (pre_url.startswith("http://") or pre_url.startswith("https://")):
         problems.append("登录前跳转地址必须以 http:// 或 https:// 开头")
 
-    content_type = (login.get("content_type") or "form").lower()
+    content_type = str(login.get("content_type") or "form").lower()
     if content_type not in ("form", "json", "raw"):
         problems.append("content_type 只能是 form / json / raw")
-    fields = login.get("fields") or {}
-    body = (login.get("body") or "").strip()
-    if not fields and not body and method != "GET":
+    if not fields and not body.strip() and method != "GET":
         problems.append("未填写请求体（login.fields 或 login.body 至少填一个）")
 
-    retry = cfg.get("retry") or {}
-    try:
-        if int(retry.get("attempts", 2)) < 1:
-            problems.append("retry.attempts 至少为 1")
-    except (TypeError, ValueError):
-        problems.append("retry.attempts 必须是数字")
+    retry = _as_dict(cfg, "retry", problems)
+    _as_number(retry, "attempts", "retry.attempts", problems, minimum=1)
+    _as_number(retry, "interval", "retry.interval", problems, minimum=0)
+
+    network = _as_dict(cfg, "network", problems)
+    _as_number(network, "wait_timeout", "network.wait_timeout", problems, minimum=0)
+    _as_number(network, "wait_interval", "network.wait_interval", problems, minimum=0)
+
+    verify = _as_dict(cfg, "verify", problems)
+    _as_number(verify, "timeout", "verify.timeout", problems, minimum=0)
+    _as_number(verify, "expect_status", "verify.expect_status", problems, minimum=100)
+
+    # 超时写错（比如 "10s"）会在真正发请求那一刻炸成 ValueError，
+    # 提前在这里拦住，用户看到的才是人话。
+    _as_number(login, "timeout", "login.timeout", problems, minimum=0)
+    _as_number(pre, "timeout", "preflight.timeout", problems, minimum=0)
 
     if problems and strict:
         raise ConfigError("；".join(problems))
@@ -174,18 +230,16 @@ def validate(cfg: dict, strict: bool = True) -> list[str]:
 def load_state() -> dict:
     try:
         with open(paths.STATE_FILE, "r", encoding="utf-8-sig") as fh:
-            return json.load(fh)
+            data = json.load(fh)
     except (OSError, ValueError):
         return {}
+    return data if isinstance(data, dict) else {}
 
 
 def save_state(**kwargs) -> None:
     state = load_state()
     state.update(kwargs)
     try:
-        tmp = paths.STATE_FILE + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(state, fh, ensure_ascii=False, indent=2)
-        os.replace(tmp, paths.STATE_FILE)
+        paths.write_json_atomic(paths.STATE_FILE, state)
     except OSError:
         pass

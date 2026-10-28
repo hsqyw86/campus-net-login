@@ -21,21 +21,42 @@ class Outcome:
 
 
 def _verify_settings(cfg: dict) -> tuple[str, int]:
-    verify = cfg.get("verify") or {}
-    url = verify.get("url") or net.DEFAULT_PROBE_URL
-    try:
-        expect = int(verify.get("expect_status") or 204)
-    except (TypeError, ValueError):
-        expect = 204
-    return url, expect
+    settings = portal.verify_settings(cfg)
+    return settings["url"], settings["expect_status"]
 
 
 def is_online(cfg: dict, timeout: float = 6.0) -> tuple[bool, str]:
-    verify = cfg.get("verify") or {}
-    if not verify.get("enabled", True):
+    settings = portal.verify_settings(cfg)
+    if not settings["enabled"]:
         return False, "未启用联网探测，无法判断是否已联网"
-    url, expect = _verify_settings(cfg)
-    return net.online(url, expect, timeout)
+    return net.online(settings["url"], settings["expect_status"], timeout)
+
+
+def _probe_target(cfg: dict, username: str, password: str) -> str:
+    """挑一个能直接做 TCP 探测的地址。
+
+    以前直接拿 login.url 的**模板**去连，地址里带 {userip} 这种占位符时
+    hostname 就是 "{userip}"，永远连不上，白等 90 秒再报「可能没连上 Wi-Fi」。
+    """
+    candidates = []
+    login_url = (cfg.get("login") or {}).get("url") or ""
+    preflight_url = (cfg.get("preflight") or {}).get("url") or ""
+    if login_url or preflight_url:
+        try:
+            variables = portal.build_variables(cfg, username, password)
+            for raw in (login_url, preflight_url):
+                if not raw:
+                    continue
+                try:
+                    candidates.append(portal.render(raw, variables, "login.url"))
+                except portal.LoginError:
+                    continue
+        except portal.LoginError:
+            candidates.extend([login_url, preflight_url])
+    for url in candidates:
+        if url and "{" not in url and "}" not in url and net.url_host_port(url)[0]:
+            return url
+    return ""
 
 
 def run_login(
@@ -63,7 +84,7 @@ def run_login(
             return Outcome(code=0, message=f"当前{why}，无需登录", already_online=True)
 
     if wait:
-        login_url = (cfg.get("login") or {}).get("url") or ""
+        login_url = _probe_target(cfg, username, password)
         network = cfg.get("network") or {}
         timeout = float(network.get("wait_timeout") or 90)
         interval = float(network.get("wait_interval") or 2.0)
@@ -91,4 +112,6 @@ def run_login(
     )
     if result.ok:
         return Outcome(code=0, message=result.message, result=result)
+    if result.config_error:
+        return Outcome(code=2, message=result.message, result=result)
     return Outcome(code=1, message=result.message, result=result)

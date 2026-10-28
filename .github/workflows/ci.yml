@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.10", "3.13"]
+        python: ["3.10", "3.11", "3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v4
@@ -25,16 +25,19 @@ jobs:
       - name: 语法编译（全部源码）
         run: python -m compileall -q login.py launcher.pyw setup.pyw core gui tests
 
-      - name: 运行测试（29 项，含本地假认证服务器）
+      - name: 运行测试（含本地假认证服务器）
         run: python tests/run_tests.py
         env:
           PYTHONIOENCODING: utf-8
 
-      - name: 命令行冒烟（不连校园网，只看参数与退出码）
+      # 用示例配置跑一遍真实子命令，覆盖 argparse / 渲染 / 自检的输出路径
+      - name: 命令行冒烟（用示例配置，不连校园网）
         run: |
           python login.py --help
           python login.py doctor --no-network
           python login.py preview
-        continue-on-error: true
+          python login.py check
         env:
           PYTHONIOENCODING: utf-8
+          CAMPUSNET_CONFIG: config.example.json
+        continue-on-error: true

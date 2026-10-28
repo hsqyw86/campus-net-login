@@ -107,13 +107,20 @@ def _check_credentials() -> Check:
         return Check("已保存账号", BAD, str(exc))
     if not creds.complete:
         return Check("已保存账号", BAD, "未保存（打开设置向导填一次即可）")
-    return Check("已保存账号", OK, f"{creds.username[:2]}***")
+    return Check("已保存账号", OK, secrets.mask_username(creds.username))
 
 
-def _check_network(probe: bool) -> Check:
+def _check_network(probe: bool, cfg: dict | None = None) -> Check:
     if not probe:
         return Check("联网探测", INFO, "已跳过")
-    online, why = net.online()
+    if cfg is not None:
+        # 用配置里的探测地址，和「登录后复核」「login.py check」保持同一口径
+        settings = portal.verify_settings(cfg)
+        if not settings["enabled"]:
+            return Check("联网探测", INFO, "配置里关掉了联网探测")
+        online, why = net.online(settings["url"], settings["expect_status"], settings["timeout"])
+    else:
+        online, why = net.online()
     return Check("联网探测", OK if online else INFO, why)
 
 
@@ -125,7 +132,7 @@ def run(config_path: str | None = None, *, probe: bool = True, verbose: bool = T
     checks.append(cfg_check)
     checks.append(_check_template(cfg, probe))
     checks.append(_check_credentials())
-    checks.append(_check_network(probe))
+    checks.append(_check_network(probe, cfg))
 
     checks.append(Check("开机自启", INFO, "已开启" if autostart.is_enabled() else "未开启"))
     if verbose:

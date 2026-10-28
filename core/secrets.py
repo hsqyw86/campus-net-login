@@ -117,6 +117,16 @@ def exists(path: str | None = None) -> bool:
     return os.path.exists(path or paths.CREDENTIAL_FILE)
 
 
+def mask_username(username: str) -> str:
+    """日志和界面上显示账号时统一打码（前 2 位保留，其余变 *）。"""
+    text = str(username or "")
+    if not text:
+        return "（空）"
+    if len(text) <= 2:
+        return text[0] + "*"
+    return text[:2] + "*" * (len(text) - 2)
+
+
 def save(username: str, password: str, path: str | None = None) -> str:
     path = path or paths.CREDENTIAL_FILE
     payload = json.dumps({"username": username, "password": password}, ensure_ascii=False).encode("utf-8")
@@ -126,11 +136,7 @@ def save(username: str, password: str, path: str | None = None) -> str:
         "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "blob": blob,
     }
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(doc, fh, ensure_ascii=False, indent=2)
-        fh.write("\n")
-    os.replace(tmp, path)
+    paths.write_json_atomic(path, doc)
     return path
 
 
@@ -143,16 +149,20 @@ def load(path: str | None = None) -> Credentials:
             doc = json.load(fh)
     except (OSError, json.JSONDecodeError) as exc:
         raise SecretError(f"读取账号文件失败：{exc}") from exc
+    if not isinstance(doc, dict):
+        raise SecretError("账号文件格式不认识，请重新运行设置向导保存一次。")
     if doc.get("format") != "dpapi-v1":
         raise SecretError("账号文件格式不认识，请重新运行设置向导保存一次。")
     try:
         payload = json.loads(_unprotect(base64.b64decode(doc.get("blob", ""))).decode("utf-8"))
     except (json.JSONDecodeError, ValueError) as exc:
         raise SecretError(f"账号文件内容损坏：{exc}") from exc
+    if not isinstance(payload, dict):
+        raise SecretError("账号文件内容损坏，请重新运行设置向导保存一次。")
     return Credentials(
-        username=payload.get("username", ""),
-        password=payload.get("password", ""),
-        saved_at=doc.get("saved_at", ""),
+        username=str(payload.get("username", "") or ""),
+        password=str(payload.get("password", "") or ""),
+        saved_at=str(doc.get("saved_at", "") or ""),
     )
 
 

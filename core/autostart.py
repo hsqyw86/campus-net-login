@@ -116,21 +116,24 @@ def _make_lnk(lnk_path: str, target: str, arguments: str, workdir: str, descript
             errors="replace",
             timeout=60,
         )
-        if proc.returncode != 0 or not os.path.exists(lnk_path):
-            detail = " ".join(filter(None, [(proc.stderr or "").strip(), (proc.stdout or "").strip()]))
-            try:
-                seen = sorted(os.listdir(folder))[:8]
-            except OSError:
-                seen = []
-            raise OSError(
-                f"创建快捷方式失败：返回码 {proc.returncode}，{detail[:600] or '无输出'}；"
-                f"目标 {lnk_path!r}；目录里现有 {seen}"
-            )
+    except subprocess.SubprocessError as exc:
+        # TimeoutExpired 不是 OSError 子类，漏掉它上面那段友好报错就整个失效
+        raise OSError(f"创建快捷方式失败：{type(exc).__name__}: {exc}；目标 {lnk_path!r}") from exc
     finally:
         try:
             os.remove(vbs)
         except OSError:
             pass
+    if proc.returncode != 0 or not os.path.exists(lnk_path):
+        detail = " ".join(filter(None, [(proc.stderr or "").strip(), (proc.stdout or "").strip()]))
+        try:
+            seen = sorted(os.listdir(folder))[:8]
+        except OSError:
+            seen = []
+        raise OSError(
+            f"创建快捷方式失败：返回码 {proc.returncode}，{detail[:600] or '无输出'}；"
+            f"目标 {lnk_path!r}；目录里现有 {seen}"
+        )
     return lnk_path
 
 
@@ -165,18 +168,6 @@ def create_desktop_shortcut(name: str = SHORTCUT_NAME, folder: str | None = None
             "CampusNet one-click login",
             icon=paths.PYTHONW_EXE,
         )
-
-
-def remove_desktop_shortcut(name: str = SHORTCUT_NAME) -> bool:
-    try:
-        os.remove(os.path.join(desktop_dir(), f"{name}.lnk"))
-        return True
-    except FileNotFoundError:
-        return False
-
-
-def shortcut_exists(name: str = SHORTCUT_NAME) -> bool:
-    return os.path.exists(os.path.join(desktop_dir(), f"{name}.lnk"))
 
 
 # ------------------------------------------------------------------ 开机自启

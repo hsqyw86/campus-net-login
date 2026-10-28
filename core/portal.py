@@ -29,7 +29,13 @@ from . import net, paths
 
 _PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _DROP_HEADERS = {"host", "content-length", "connection", "accept-encoding", "transfer-encoding", "expect"}
-_SECRET_VARS = {"username", "user", "account", "userid", "password", "password_raw", "md5", "md5_upper", "sha1", "base64", "urlquote"}
+_SECRET_VARS = {
+    "username", "user", "account", "userid", "user_id", "name",
+    "password", "password_raw", "pwd", "passwd",
+    "md5", "md5_upper", "sha1", "base64", "urlquote",
+}
+# 跨域跳转时不该带过去的头（浏览器同样会丢掉这些）
+_CROSS_ORIGIN_DROP_HEADERS = {"authorization", "cookie", "proxy-authorization"}
 
 logger = logging.getLogger("campusnet.portal")
 
@@ -69,6 +75,10 @@ class LoginError(Exception):
     """登录过程中出错（配置、占位符、网络不可达等）。"""
 
 
+class ConfigProblem(LoginError):
+    """配置本身有问题（占位符写错、地址为空……）。重试一百次也一样，立即停。"""
+
+
 @dataclass
 class RenderedRequest:
     """一条已经渲染好、可以直接发出去的请求。"""
@@ -103,6 +113,8 @@ class LoginResult:
     elapsed: float = 0.0
     request_preview: str = ""
     verified: bool | None = None
+    definitive: bool = False  # 服务器给过明确答复（如密码错误），重试没意义还会锁账号
+    config_error: bool = False  # 配置本身有问题（不是网络、不是账号）
 
 
 def _mask_secret(text: str, limit: int = 400) -> str:
@@ -124,7 +136,7 @@ def render(template, variables: dict, where: str = "配置") -> str:
         key = match.group(1)
         if key not in variables:
             known = ", ".join(sorted(variables))
-            raise LoginError(
+            raise ConfigProblem(
                 f"{where} 里的占位符 {{{key}}} 不认识。\n可用的变量有：{known}"
             )
         value = variables[key]
@@ -180,7 +192,7 @@ def build_variables(cfg: dict, username: str, password: str) -> dict:
         try:
             variables["password"] = str(hook.transform_password(username, password, dict(variables)))
         except Exception as exc:  # noqa: BLE001
-            raise LoginError(f"custom_hook.transform_password 执行出错：{exc}") from exc
+            raise ConfigProblem(f"custom_hook.transform_password 执行出错：{exc}") from exc
     return variables
 
 
@@ -196,6 +208,18 @@ class _FakeResponse:
         return self._headers
 
 
+def _origin(url: str) -> tuple[str, str, int | None]:
+    """scheme + host + port，用来判断是不是跨域跳转。"""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError:
+        return ("", "", None)
+    port = parsed.port
+    if port is None:
+        port = 443 if parsed.scheme.lower() == "https" else 80
+    return (parsed.scheme.lower(), (parsed.hostname or "").lower(), port)
+
+
 class Session:
     """带 Cookie 的 HTTP 会话，登录前后的请求共享同一个会话。
 
@@ -209,16 +233,16 @@ class Session:
         self.jar = http.cookiejar.CookieJar()
         self.history: list[tuple[int, str]] = []
         self.max_redirects = max_redirects
+        self.last_url = ""  # 最后一次真正访问到的地址（做 Referer 用）
         self._insecure = insecure
         self._opener = self._build()
 
     def _build(self):
-        class _NoRedirect(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, *args, **kwargs):
-                return None
-
-        handlers = [urllib.request.HTTPCookieProcessor(self.jar), _NoRedirect()]
-        handlers.append(urllib.request.HTTPSHandler(context=net._ssl_context(self._insecure)))
+        handlers = [
+            urllib.request.HTTPCookieProcessor(self.jar),
+            net.NoRedirect(),
+            urllib.request.HTTPSHandler(context=net._ssl_context(self._insecure)),
+        ]
         return urllib.request.build_opener(*handlers)
 
     def _absorb_cookies(self, headers, url: str) -> None:
@@ -232,6 +256,7 @@ class Session:
     def _fill(self, result: net.ProbeResult, status: int, headers, raw: bytes, final_url: str) -> None:
         result.status = status
         result.final_url = final_url
+        self.last_url = final_url
         result.headers = {k.lower(): v for k, v in (headers.items() if headers else [])}
         raw = net._decode_body(raw, result.headers.get("content-encoding", ""))
         result.body = net._to_text(raw, ("utf-8", "gb18030"), result.headers.get("content-type", ""))
@@ -279,6 +304,11 @@ class Session:
                         current_method = "GET"
                         current_body = None
                         base_headers = {k: v for k, v in base_headers.items() if k.lower() != "content-type"}
+                    if _origin(next_url) != _origin(current_url):
+                        # 网关跳到另一个域名时，别把 Cookie/Authorization 这些带过去
+                        base_headers = {
+                            k: v for k, v in base_headers.items() if k.lower() not in _CROSS_ORIGIN_DROP_HEADERS
+                        }
                     current_url = next_url
                     continue
                 return result
@@ -310,8 +340,16 @@ def _render_headers(raw: dict | None, variables: dict) -> dict:
     return headers
 
 
+_ALREADY_ENCODED_VARS = {"urlquote"}
+
+
 def _maybe_escape(key: str, value: str, escape_form: bool) -> str:
-    if escape_form and key in _SECRET_VARS:
+    """表单体里的占位符按「一个字段值」来编码，和 urlencode 分支保持一致。
+
+    以前只编码「密码类」变量，结果 {pwd} / {token} 里的 & = + 会把一个字段劈成两个。
+    {urlquote} 本身就是编码后的值，再编码一次就成了双重编码。
+    """
+    if escape_form and key not in _ALREADY_ENCODED_VARS:
         return urllib.parse.quote(value, safe="")
     return value
 
@@ -324,7 +362,7 @@ def build_request(cfg: dict, variables: dict, *, escape_form: bool | None = None
 
     url = render(login.get("url", ""), variables, "login.url").strip()
     if not url:
-        raise LoginError("配置里没有登录地址（login.url 为空）。")
+        raise ConfigProblem("配置里没有登录地址（login.url 为空）。")
     headers = _render_headers(login.get("headers"), variables)
     ctype = (login.get("content_type") or "form").lower()
     fields = login.get("fields") or {}
@@ -342,17 +380,21 @@ def build_request(cfg: dict, variables: dict, *, escape_form: bool | None = None
             body_text = urllib.parse.urlencode(rendered)
             headers.setdefault("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
     elif body_tpl:
-        if escape_form:
+        # JSON 体里不该做 URL 编码（那会把密码改成 x%26y 发出去），
+        # 只有表单体才需要；fields 分支的 json.dumps 本来也不编码。
+        if ctype == "json":
+            body_text = render(body_tpl, variables, "login.body")
+            headers.setdefault("Content-Type", "application/json; charset=UTF-8")
+        elif escape_form:
             body_text = _PLACEHOLDER.sub(
                 lambda m: _maybe_escape(m.group(1), render(m.group(0), variables, "login.body"), True),
                 body_tpl,
             )
+            headers.setdefault("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
         else:
             body_text = render(body_tpl, variables, "login.body")
-        if ctype == "json":
-            headers.setdefault("Content-Type", "application/json; charset=UTF-8")
-        elif ctype == "form":
-            headers.setdefault("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+            if ctype == "form":
+                headers.setdefault("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
 
     if method == "GET":
         if body_text:
@@ -494,10 +536,17 @@ def _preflight(cfg: dict, session: Session, variables: dict) -> dict:
     method = (pre.get("method") or "GET").upper()
     headers = _render_headers(pre.get("headers"), variables)
     body_tpl = pre.get("body") or ""
-    body = render(body_tpl, variables, "preflight.body").encode("utf-8") if body_tpl and method != "GET" else None
+    body_text = render(body_tpl, variables, "preflight.body") if body_tpl else ""
+    if body_text and method == "GET":
+        # GET 没有请求体，参数只能挂在查询串上；以前这里会静默丢掉整段 body
+        url = url + ("&" if "?" in url else "?") + body_text
+        body_text = ""
+    body = body_text.encode("utf-8") if body_text else None
     timeout = float(pre.get("timeout") or 8)
+    if not pre.get("follow_redirects", True):
+        session.max_redirects = 0
 
-    logger.info("preflight: %s %s", method, url)
+    logger.info("preflight: %s %s", method, _mask_secret(url))
     res = session.request(method, url, headers=headers, body=body, timeout=timeout)
     if res.error:
         raise LoginError(f"访问登录前的跳转地址失败：{res.error}")
@@ -532,13 +581,14 @@ def _attempt(cfg: dict, variables: dict, session: Session, *, verify: bool) -> L
 
     request = build_request(cfg, variables)
     if login.get("auto_referer", True) and not any(k.lower() == "referer" for k in request.headers):
-        ref = session.history[-1][1] if session.history else ((cfg.get("preflight") or {}).get("url") or "")
+        # 用「上一跳真正落地的地址」当 Referer；没有跳转时退回预跳转地址。
+        ref = session.last_url or (cfg.get("preflight") or {}).get("url") or ""
         if ref:
             try:
                 request.headers["Referer"] = render(ref, variables, "preflight.url")
-            except LoginError:
-                pass
-    logger.info("login: %s %s", request.method, request.url)
+            except LoginError as exc:
+                logger.debug("Referer 渲染失败，已跳过：%s", exc)
+    logger.info("login: %s %s", request.method, _mask_secret(request.url))
     res = session.request(
         request.method,
         request.url,
@@ -562,6 +612,7 @@ def _attempt(cfg: dict, variables: dict, session: Session, *, verify: bool) -> L
 
     if verdict is False:
         result.ok = False
+        result.definitive = True  # 密码错 / 已欠费这类，服务器已经说清了，别再连发
         result.detail = _mask_secret(res.body, 600)
         return result
 
@@ -583,17 +634,34 @@ def _attempt(cfg: dict, variables: dict, session: Session, *, verify: bool) -> L
     return result
 
 
-def verify_online(cfg: dict) -> tuple[bool, str]:
-    cfg_v = cfg.get("verify") or {}
-    if not cfg_v.get("enabled", True):
-        return True, "已跳过联网检测"
-    url = cfg_v.get("url") or net.DEFAULT_PROBE_URL
+def verify_settings(cfg: dict) -> dict:
+    """统一解析 verify 段（探测地址 / 期望状态码 / 超时 / 是否启用）。
+
+    runner 里的「是否已联网」和这里的「登录后复核」必须用同一套参数，
+    否则会出现自检说已联网、登录后复核说不通的怪事。
+    """
+    raw = cfg.get("verify") or {}
     try:
-        expect = int(cfg_v.get("expect_status") or 204)
+        expect = int(raw.get("expect_status") or net.DEFAULT_PROBE_STATUS)
     except (TypeError, ValueError):
-        expect = 204
-    timeout = float(cfg_v.get("timeout") or 6)
-    return net.online(url, expect, timeout)
+        expect = net.DEFAULT_PROBE_STATUS
+    try:
+        timeout = float(raw.get("timeout") or 6)
+    except (TypeError, ValueError):
+        timeout = 6.0
+    return {
+        "enabled": bool(raw.get("enabled", True)),
+        "url": raw.get("url") or net.DEFAULT_PROBE_URL,
+        "expect_status": expect,
+        "timeout": timeout,
+    }
+
+
+def verify_online(cfg: dict) -> tuple[bool, str]:
+    settings = verify_settings(cfg)
+    if not settings["enabled"]:
+        return True, "已跳过联网检测"
+    return net.online(settings["url"], settings["expect_status"], settings["timeout"])
 
 
 def login(
@@ -608,11 +676,11 @@ def login(
     """执行一次完整登录（含预跳转、重试）。"""
     log = log or logger
     started = time.time()
-    variables = build_variables(cfg, username, password)
-    if cfg.get("verify") and cfg["verify"].get("enabled", True):
-        do_verify = True
-    else:
-        do_verify = False
+    try:
+        variables = build_variables(cfg, username, password)
+    except ConfigProblem as exc:
+        return LoginResult(ok=False, message=str(exc), definitive=True, config_error=True)
+    do_verify = verify_settings(cfg)["enabled"]
     if verify is not None:
         do_verify = verify
 
@@ -638,6 +706,11 @@ def login(
                     elapsed=time.time() - started,
                 )
             last = _attempt(cfg, variables, session, verify=do_verify)
+        except ConfigProblem as exc:
+            # 配置写错了，重试一百次也是同一个错，直接给结论
+            last = LoginResult(
+                ok=False, message=str(exc), attempts=index, definitive=True, config_error=True
+            )
         except LoginError as exc:
             last = LoginResult(ok=False, message=str(exc), attempts=index)
         except Exception as exc:  # noqa: BLE001 - 兜底，避免一键登录弹崩溃框
@@ -650,6 +723,9 @@ def login(
             log.info("第 %s 次尝试登录成功：%s", index, last.message)
             return last
         log.warning("第 %s 次尝试失败：%s", index, last.message)
+        if last.definitive:
+            log.info("服务器已明确拒绝，不再重试")
+            return last
         if index < attempts and interval > 0:
             time.sleep(interval)
 

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import queue
@@ -14,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -59,7 +61,6 @@ class SetupApp:
         self.testing = False
         self.cfg = self._load_config()
         self.old_creds = self._load_creds()
-        self._pending_warning = getattr(self, "_pending_warning", "")
         paths.write_python_hint()
 
         root.title(APP_TITLE)
@@ -80,12 +81,12 @@ class SetupApp:
     # ------------------------------------------------------------ 初始化数据
 
     def _load_config(self) -> dict:
+        self._pending_warning = ""
         try:
             return config_mod.load()
         except config_mod.ConfigError as exc:
             self._pending_warning = str(exc)
-            cfg = config_mod.default_config()
-            return cfg
+            return config_mod.default_config()
 
     def _load_creds(self):
         try:
@@ -196,6 +197,8 @@ class SetupApp:
         body_scroll = ttk.Scrollbar(box2, orient="vertical", command=self.body_text.yview)
         body_scroll.grid(row=row, column=3, sticky="ns")
         self.body_text.configure(yscrollcommand=body_scroll.set)
+        # 手填请求体时下拉框要跟着变，否则「账号字段」里永远只有「（不使用）」
+        self.body_text.bind("<<Modified>>", self._on_body_modified)
 
         row += 1
         self.body_hint = ttk.Label(box2, text="", style="Hint.TLabel")
@@ -340,6 +343,16 @@ class SetupApp:
         self.user_var.set(self.old_creds.username)
         self._refresh_field_choices()
         self._update_body_hint()
+
+    def _on_body_modified(self, _event=None) -> None:
+        """请求体一改就刷新字段下拉框（用 <<Modified>> 标志去重，避免递归触发）。"""
+        try:
+            if not self.body_text.edit_modified():
+                return
+            self.body_text.edit_modified(False)
+        except Exception:
+            pass
+        self._refresh_field_choices()
 
     def _update_body_hint(self) -> None:
         ctype = self.ctype_var.get()
@@ -545,20 +558,27 @@ class SetupApp:
         self.log("  下一步：填好 ③ 里的账号密码，点「测试登录」。", "info")
 
     def on_check_network(self) -> None:
+        # 先在主线程把界面内容读出来。Tk 变量不是线程安全的，
+        # 以前在后台线程里调 collect_config()，在 pythonw 下会静默失败，
+        # 症状就是「认证服务器可达」那行永远不出现。
+        try:
+            cfg = self.collect_config()
+            target = cfg["login"]["url"]
+        except ValueError as exc:
+            self.log(f"配置还不完整，先跳过认证服务器检查：{exc}", "warn")
+            target = ""
+
         def work():
             ip = net.local_ip()
             online, why = net.online()
             self.log(f"本机 IP：{ip}", "info")
             self.log(f"联网状态：{why}", "ok" if online else "warn")
-            try:
-                cfg = self.collect_config()
-                target = cfg["login"]["url"]
-                if net.portal_reachable(target):
-                    self.log(f"认证服务器可达：{target}", "ok")
-                else:
-                    self.log(f"认证服务器不可达：{target}（可能不在校园网内 / 未连 Wi-Fi）", "err")
-            except ValueError:
-                pass
+            if not target:
+                return
+            if net.portal_reachable(target):
+                self.log(f"认证服务器可达：{target}", "ok")
+            else:
+                self.log(f"认证服务器不可达：{target}（可能不在校园网内 / 未连 Wi-Fi）", "err")
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -636,9 +656,10 @@ class SetupApp:
                     self.root.after(0, lambda: self.status_label.configure(text="✓ 登录成功", style="Ok.TLabel"))
                 else:
                     self.log(f"✗ 登录失败：{result.message}", "err")
-                    if result.body:
-                        snippet = portal.extract_message(result.body) or result.body[:300]
-                        self.log(f"  服务器返回：{snippet}", "warn")
+                    snippet = (result.detail or "").strip()
+                    if snippet:
+                        # detail 里密码已经打过码，body 是原文，别往界面上贴
+                        self.log(f"  服务器返回：{snippet[:600]}", "warn")
                     self.log("  排查建议：确认账号密码；确认成功/失败关键字；必要时补「登录前跳转」地址。", "info")
                     self.root.after(0, lambda: self.status_label.configure(text="✗ 登录失败", style="Err.TLabel"))
             except Exception as exc:  # noqa: BLE001
@@ -662,17 +683,23 @@ class SetupApp:
         if not creds:
             return
         username, password = creds
+        # 先存凭据再存配置：反过来的话，凭据写失败会留下「新配置 + 旧密码」的半保存状态
         try:
-            path = config_mod.save(cfg)
             secrets.save(username, password)
         except (OSError, secrets.SecretError) as exc:
+            messagebox.showerror(APP_TITLE, f"账号密码保存失败，设置没有保存：{exc}")
+            self.log(f"✗ 账号密码保存失败：{exc}", "err")
+            return
+        try:
+            path = config_mod.save(cfg)
+        except (OSError, ValueError) as exc:
             messagebox.showerror(APP_TITLE, f"保存失败：{exc}")
             self.log(f"✗ 保存失败：{exc}", "err")
             return
         self.cfg = cfg
         self.old_creds = secrets.Credentials(username=username, password=password)
         self.pass_var.set("")
-        self.status_label.configure(text=f"✓ 已保存，账号 {username}", style="Ok.TLabel")
+        self.status_label.configure(text=f"✓ 已保存，账号 {secrets.mask_username(username)}", style="Ok.TLabel")
         self.log(f"✓ 配置已保存：{paths.rel(path)}", "ok")
         self.log(f"✓ 账号密码已加密保存：{paths.rel(paths.CREDENTIAL_FILE)}", "ok")
         self.log("现在可以双击桌面上的「校园网一键登录」了。", "info")
@@ -722,10 +749,39 @@ class SetupApp:
         self.root.destroy()
 
 
+def _fatal(message: str, detail: str = "") -> None:
+    """pythonw 下没有控制台，异常必须弹出来，否则用户只看到「双击没反应」。"""
+    text = message + (("\n\n" + detail.strip()[:800]) if detail else "")
+    try:
+        from tkinter import messagebox
+
+        messagebox.showerror(APP_TITLE, text)
+        return
+    except Exception:  # pragma: no cover
+        pass
+    try:  # pragma: no cover
+        ctypes.windll.user32.MessageBoxW(None, text, APP_TITLE, 0x10)
+    except Exception:
+        pass
+
+
 def main() -> int:
-    _enable_dpi()
-    root = tk.Tk()
-    SetupApp(root)
+    try:
+        _enable_dpi()
+        root = tk.Tk()
+    except Exception as exc:  # noqa: BLE001  # pragma: no cover
+        _fatal(f"设置向导启动失败：{type(exc).__name__}: {exc}")
+        return 1
+    try:
+        SetupApp(root)
+    except Exception as exc:  # noqa: BLE001
+        traceback.print_exc()
+        try:
+            root.destroy()
+        except Exception:
+            pass
+        _fatal(f"设置向导初始化失败：{type(exc).__name__}: {exc}", traceback.format_exc())
+        return 1
     root.mainloop()
     return 0
 

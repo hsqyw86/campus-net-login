@@ -21,7 +21,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
-from core import config as config_mod, paths, runner, secrets  # noqa: E402
+from core import config as config_mod, log_setup, paths, runner, secrets  # noqa: E402
 
 APP_TITLE = "校园网一键登录"
 _MUTEX_NAME = "Local\\CampusNetAutoLogin_SingleInstance"
@@ -30,15 +30,8 @@ log = logging.getLogger("campusnet")
 
 
 def setup_logging() -> None:
-    paths.ensure_log_dir()
-    root = logging.getLogger("campusnet")
-    root.setLevel(logging.DEBUG)
-    if not any(isinstance(h, logging.FileHandler) for h in root.handlers):
-        handler = logging.FileHandler(paths.LOG_FILE, encoding="utf-8")
-        handler.setFormatter(
-            logging.Formatter("%(asctime)s %(levelname)-7s %(name)s | %(message)s", "%Y-%m-%d %H:%M:%S")
-        )
-        root.addHandler(handler)
+    # 和命令行共用一份，带 1MB 轮转——开机自启走的是这里，日志不能只增不减
+    log_setup.setup_logging(quiet=True)
 
 
 def acquire_single_instance() -> bool:
@@ -46,10 +39,12 @@ def acquire_single_instance() -> bool:
     global _mutex_handle
     try:
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
         _mutex_handle = kernel32.CreateMutexW(None, False, _MUTEX_NAME)
-        if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-            return False
-        return True
+        if not _mutex_handle:
+            return True
+        return ctypes.get_last_error() != 183  # ERROR_ALREADY_EXISTS
     except Exception:  # pragma: no cover
         return True
 
@@ -106,17 +101,42 @@ def ask_open_setup(message: str, detail: str = "") -> bool:
         return False
 
 
+def warning(text: str) -> None:
+    """只告知、不给按钮的提示框；tkinter 起不来时退回系统 MessageBox。"""
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        messagebox.showwarning(APP_TITLE, text, parent=root)
+        root.destroy()
+        return
+    except Exception:  # pragma: no cover
+        log.debug("提示框失败，改用 MessageBox", exc_info=True)
+    try:  # pragma: no cover
+        ctypes.windll.user32.MessageBoxW(None, text, APP_TITLE, 0x30)
+    except Exception:
+        pass
+
+
 def open_setup() -> None:
     script = os.path.join(paths.ROOT, "setup.pyw")
     if not os.path.exists(script):
-        ask_open_setup("找不到设置向导 setup.pyw。", paths.ROOT)
+        # 这里不能问「要打开设置向导吗」——向导本身就是找不到的那个东西
+        warning(f"找不到设置向导：\n{script}\n\n请确认程序文件完整。")
         return
-    subprocess.Popen(
-        [paths.PYTHONW_EXE, script],
-        cwd=paths.ROOT,
-        close_fds=True,
-        creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
-    )
+    try:
+        subprocess.Popen(
+            [paths.PYTHONW_EXE, script],
+            cwd=paths.ROOT,
+            close_fds=True,
+            creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
+        )
+    except OSError as exc:
+        log.error("打开设置向导失败：%s", exc)
+        warning(f"打开设置向导失败：\n{exc}")
 
 
 # ------------------------------------------------------------------ 主流程
@@ -176,13 +196,17 @@ def main(argv=None) -> int:
 
     if outcome.code == 0:
         log.info("结果：%s", outcome.message)
-        if not args.quiet and not outcome.already_online:
+        ui = cfg.get("ui")
+        ui = ui if isinstance(ui, dict) else {}
+        if not outcome.already_online and not args.quiet and ui.get("notify_on_success", True):
             elapsed = outcome.result.elapsed if outcome.result else 0.0
             toast(f"✓ 校园网已连接（{elapsed:.1f}s）")
         return 0
 
     log.warning("结果：%s", outcome.message)
-    notify = (cfg.get("ui") or {}).get("notify_on_failure", True)
+    ui = cfg.get("ui")
+    ui = ui if isinstance(ui, dict) else {}
+    notify = ui.get("notify_on_failure", True)
     if outcome.code == 3:
         # 不在校园网内 / 没连 Wi-Fi：开机时很常见，不打扰用户
         return 3

@@ -48,16 +48,22 @@ class ProbeResult:
 def local_ip() -> str:
     """获取本机在局域网里的 IP（不真的发包）。"""
     for target in ("223.5.5.5", "114.114.114.114", "8.8.8.8", "192.168.1.1"):
+        sock = None
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.settimeout(0.4)
             sock.connect((target, 53))
             ip = sock.getsockname()[0]
-            sock.close()
             if ip and not ip.startswith("127."):
                 return ip
         except OSError:
             continue
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:  # pragma: no cover
+                    pass
     try:
         return socket.gethostbyname(socket.gethostname())
     except OSError:
@@ -74,6 +80,10 @@ def local_mac() -> str:
     except Exception:  # pragma: no cover - 极少数环境会抛异常
         return ""
     if not node:
+        return ""
+    if (node >> 40) & 0x01:
+        # uuid.getnode() 取不到真实网卡时会随机造一个（最低位组播位为 1），
+        # 这种值发出去只会让认证失败得更莫名，宁可当作取不到。
         return ""
     raw = f"{node:012x}"
     return ":".join(raw[i : i + 2] for i in range(0, 12, 2))
@@ -105,6 +115,13 @@ def _decode_body(raw: bytes, encoding: str) -> bytes:
     return raw
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """拦下自动跳转，让调用方自己看 3xx 和 Location。"""
+
+    def redirect_request(self, *args, **kwargs):  # noqa: D102
+        return None
+
+
 def http_probe(
     url: str,
     *,
@@ -128,13 +145,9 @@ def http_probe(
         result.error = f"请求地址不合法: {exc}"
         return result
 
-    class _NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, *args, **kwargs):  # noqa: D102
-            return None
-
     handlers: list = [urllib.request.HTTPSHandler(context=_ssl_context(insecure))]
     if not follow_redirects:
-        handlers.append(_NoRedirect())
+        handlers.append(NoRedirect())
     opener = urllib.request.build_opener(*handlers)
 
     try:
@@ -209,15 +222,17 @@ def portal_reachable(url: str, timeout: float = 2.0) -> bool:
 
 def online(url: str = DEFAULT_PROBE_URL, expect_status: int = DEFAULT_PROBE_STATUS, timeout: float = 6.0):
     """是否已经可以正常上网。返回 (是否在线, 说明)。"""
-    res = http_probe(url, timeout=timeout, insecure=(url.startswith("https://")))
+    # 不跟跳转：未认证时探测地址通常会被 302 到认证页，
+    # 那个 Location 本身就是最有用的诊断信息（跟过去只会拿到一张登录页 HTML）。
+    res = http_probe(url, timeout=timeout, insecure=url.startswith("https://"), follow_redirects=False)
     if not res.ok:
         return False, res.error or "探测失败"
     if res.status == expect_status:
         return True, "已联网"
     # 被劫持到认证页时，服务器通常返回 200 + HTML，或被 302 到 portal
     location = res.headers.get("location", "")
-    if res.status in (301, 302, 303, 307, 308) and location:
-        return False, f"被重定向到认证页: {location}"
+    if res.status in (301, 302, 303, 307, 308):
+        return False, f"被重定向到认证页: {location or '(没有 Location)'}"
     return False, f"探测地址返回 HTTP {res.status}（未联网）"
 
 

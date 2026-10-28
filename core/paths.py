@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 
@@ -39,6 +40,28 @@ def rel(path: str) -> str:
         return os.path.relpath(path, ROOT)
     except ValueError:
         return path
+
+
+def write_json_atomic(path: str, data, *, indent: int = 2) -> str:
+    """先写临时文件再替换，避免写到一半断电/崩溃留下半个 JSON。
+
+    正常写入会被杀软、同步盘占用而失败，所以调用方自己决定要不要吞掉 OSError。
+    """
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=indent)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except OSError:
+        # 临时文件要是留下垃圾就顺手清掉，别占着目录
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    return path
 
 
 def write_python_hint() -> str:

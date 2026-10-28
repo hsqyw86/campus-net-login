@@ -18,6 +18,7 @@ import argparse
 import getpass
 import logging
 import os
+import subprocess
 import sys
 import time
 
@@ -35,6 +36,7 @@ from core import (  # noqa: E402
     autostart,
     config as config_mod,
     doctor,
+    log_setup,
     net,
     paths,
     portal,
@@ -46,26 +48,7 @@ log = logging.getLogger("campusnet")
 
 
 def setup_logging(quiet: bool = False) -> None:
-    paths.ensure_log_dir()
-    try:
-        if os.path.exists(paths.LOG_FILE) and os.path.getsize(paths.LOG_FILE) > 1024 * 1024:
-            os.replace(paths.LOG_FILE, paths.LOG_FILE + ".1")
-    except OSError:
-        pass
-
-    root = logging.getLogger("campusnet")
-    root.setLevel(logging.DEBUG)
-    if not any(isinstance(h, logging.FileHandler) for h in root.handlers):
-        fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s | %(message)s", "%Y-%m-%d %H:%M:%S")
-        fh = logging.FileHandler(paths.LOG_FILE, encoding="utf-8")
-        fh.setLevel(logging.DEBUG)
-        fh.setFormatter(fmt)
-        root.addHandler(fh)
-    if not quiet and not any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in root.handlers):
-        sh = logging.StreamHandler(sys.stdout)
-        sh.setLevel(logging.INFO)
-        sh.setFormatter(logging.Formatter("%(message)s"))
-        root.addHandler(sh)
+    log_setup.setup_logging(quiet=quiet)
 
 
 def _need_config(path: str | None):
@@ -108,14 +91,15 @@ def cmd_login(args) -> int:
     print(f"✗ {outcome.message}")
     if outcome.result and outcome.result.detail:
         log.debug("响应内容：%s", outcome.result.detail)
+    if outcome.code == 3:
+        print("  看起来现在不在校园网里（或没连上 Wi-Fi）。")
     return outcome.code
-
-
 
 
 def cmd_check(args) -> int:
     print(f"程序目录：{paths.ROOT}")
     cfg = None
+    config_ok = True
     try:
         cfg = config_mod.load(args.config)
         print(f"配置文件：{paths.rel(paths.CONFIG_FILE)} ✓")
@@ -123,27 +107,29 @@ def cmd_check(args) -> int:
         if (cfg.get("preflight") or {}).get("url"):
             print(f"预跳转地址：{cfg['preflight']['url']}")
     except config_mod.ConfigError as exc:
+        config_ok = False
         print(f"配置文件：✗ {exc}")
     try:
         creds = secrets.load()
         if creds.complete:
-            masked = creds.username[:2] + "*" * max(1, len(creds.username) - 2)
-            print(f"已保存账号：{masked}（保存于 {creds.saved_at or '未知时间'}）✓")
+            print(f"已保存账号：{secrets.mask_username(creds.username)}（保存于 {creds.saved_at or '未知时间'}）✓")
         else:
             print("已保存账号：✗ 未保存")
     except secrets.SecretError as exc:
         print(f"已保存账号：✗ {exc}")
 
-    url = ((cfg or {}).get("verify") or {}).get("url") or net.DEFAULT_PROBE_URL
-    expect = int((((cfg or {}).get("verify") or {}).get("expect_status")) or 204)
-    online, why = net.online(url, expect, 6)
+    settings = portal.verify_settings(cfg or {})
+    online, why = net.online(settings["url"], settings["expect_status"], settings["timeout"])
     print(f"当前联网：{'✓ ' if online else '✗ '}{why}")
     print(f"本机 IP：{net.local_ip()}")
     print(f"开机自动登录：{'已开启' if autostart.is_enabled() else '未开启'}")
     state = config_mod.load_state()
     if state.get("last_check"):
         print(f"上次尝试：{state['last_check']}  {'成功' if state.get('last_ok') else '失败'}  {state.get('last_message', '')}")
-    return 0 if online else 1
+    # 退出码要和文件开头那三行说明对得上：2 = 配置有问题，3 = 网络未就绪
+    if not config_ok:
+        return 2
+    return 0 if online else 3
 
 
 def cmd_preview(args) -> int:
@@ -194,7 +180,7 @@ def cmd_autostart(args) -> int:
     if action == "on":
         try:
             where = autostart.enable(paths.PYTHONW_EXE, os.path.join(paths.ROOT, "launcher.pyw"))
-        except OSError as exc:
+        except (OSError, subprocess.SubprocessError) as exc:
             print(f"✗ 开启失败：{exc}")
             return 1
         print(f"✓ 已开启开机自动登录\n  {where}")

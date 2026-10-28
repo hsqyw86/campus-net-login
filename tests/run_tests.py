@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import random
+import re
 import shutil
 import string
 import subprocess
@@ -280,6 +281,89 @@ def test_config_bom_and_gbk():
             raise AssertionError("GBK 文件应该报编码错误")
 
 
+def test_secret_alias_escaping():
+    """密码别名 pwd / passwd 也必须做 URL 编码，否则含 & 的密码会被截断。"""
+    cfg = config_mod.normalize(
+        {"login": {"url": "http://x/login", "content_type": "form", "body": "user={username}&pwd={pwd}&passwd={passwd}"}}
+    )
+    req = portal.build_request(cfg, portal.build_variables(cfg, "a b", "x&y"))
+    parsed = dict(urllib.parse.parse_qsl(req.body_text, keep_blank_values=True))
+    expect(parsed.get("pwd") == "x&y", f"pwd 别名没编码，密码会被截断：{req.body_text}")
+    expect(parsed.get("passwd") == "x&y", f"passwd 别名没编码，密码会被截断：{req.body_text}")
+
+
+def test_json_body_keeps_password_raw():
+    """JSON 请求体里密码不能被 URL 编码（x&y 不该变成 x%26y）。"""
+    cfg = config_mod.normalize(
+        {
+            "login": {
+                "url": "http://x/api/login",
+                "content_type": "json",
+                "fields": {"userId": "{username}", "password": "{password}"},
+            }
+        }
+    )
+    req = portal.build_request(cfg, portal.build_variables(cfg, "u1", "x&y"))
+    payload = json.loads(req.body_text)
+    expect(payload["password"] == "x&y", f"JSON 里密码被错误编码：{req.body_text}")
+    expect(payload["userId"] == "u1", f"JSON 里账号不对：{req.body_text}")
+
+
+def test_config_type_errors():
+    """配置文件结构写错时要给能看懂的提示，而不是 AttributeError。"""
+    with tmpdir() as tmp:
+        bad_list = os.path.join(tmp, "list.json")
+        with open(bad_list, "w", encoding="utf-8") as fh:
+            fh.write("[]")
+        try:
+            config_mod.load(bad_list)
+        except config_mod.ConfigError as exc:
+            expect("对象" in str(exc) or "dict" in str(exc).lower(), f"提示不清楚：{exc}")
+        else:
+            raise AssertionError("顶层是数组时应该报 ConfigError")
+
+        bad_login = os.path.join(tmp, "str.json")
+        with open(bad_login, "w", encoding="utf-8") as fh:
+            fh.write('{"login": "http://x/login"}')
+        try:
+            config_mod.load(bad_login)
+        except config_mod.ConfigError:
+            pass
+        else:
+            raise AssertionError("login 写成字符串时应该报 ConfigError")
+
+        problems = config_mod.validate(
+            config_mod.normalize({"login": {"url": "http://x/"}, "retry": {"attempts": "两次"}}), strict=False
+        )
+        expect(any("retry.attempts" in p for p in problems), f"没校验出 attempts 类型错：{problems}")
+
+
+def test_credentials_bad_shape():
+    """credentials.dat 被改成合法 JSON 但结构不对时，抛 SecretError 而不是 AttributeError。"""
+    with tmpdir() as tmp:
+        path = os.path.join(tmp, "cred.dat")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("[]")
+        try:
+            secrets.load(path)
+        except secrets.SecretError:
+            pass
+        else:
+            raise AssertionError("结构不对的凭据文件应该报 SecretError")
+
+
+def test_definitive_failure_not_retried():
+    """服务器已经明确说「密码错误」时不要重试——重试只会把账号锁死。"""
+    with MockPortal() as srv:
+        cfg = make_cfg(srv.base_url)
+        cfg["retry"] = {"attempts": 3, "interval": 0.05}
+        result = portal.login(cfg, USERNAME, "wrong-pass")
+        expect(not result.ok, "错误密码居然成功")
+        expect(result.attempts == 1, f"确定性失败不该重试，实际试了 {result.attempts} 次")
+        posts = [r for r in srv.requests if r[0] == "POST"]
+        expect(len(posts) == 1, f"服务端收到 {len(posts)} 次登录请求，应当只有 1 次")
+
+
 def test_autostart_command():
     cmd = autostart.build_command(r"C:\py\pythonw.exe", r"C:\app\launcher.pyw")
     expect(cmd == r'"C:\py\pythonw.exe" "C:\app\launcher.pyw" --wait --quiet', f"自启命令不对：{cmd}")
@@ -345,6 +429,50 @@ def test_shortcut_creation():
             raise Skipped("本机 WScript.Shell 无法保存中文路径参数（非中文系统），已生成 .lnk 但内容不可验证")
         expect("一键登录.vbs" in out, f"快捷方式参数没指向启动器：{out}")
         expect(ROOT.lower() in out.lower(), f"工作目录不对：{out}")
+
+
+def test_vbs_launchers_utf16():
+    """两个 .vbs 必须是 UTF-16LE+BOM，并且指向正确的入口。
+
+    这两条是踩过的坑：WSH 用 ANSI 读就会把中文全部读花；
+    入口指错了（比如 一键登录.vbs 误加 --wait）会让开机自启多等一轮。
+    """
+    cases = {
+        "一键登录.vbs": "launcher.pyw",
+        "设置向导.vbs": "setup.pyw",
+    }
+    for name, entry in cases.items():
+        path = os.path.join(ROOT, name)
+        expect(os.path.exists(path), f"缺少启动器：{name}")
+        with open(path, "rb") as fh:
+            raw = fh.read()
+        expect(raw[:2] == b"\xff\xfe", f"{name} 不是 UTF-16LE BOM 开头（前两字节 {raw[:2]!r}），中文会乱码")
+        text = raw[2:].decode("utf-16-le")
+        expect(entry in text, f"{name} 没有调用 {entry}")
+        head = raw[2:].decode("utf-16-le").lower()
+        if name == "一键登录.vbs":
+            expect("--wait" not in head.split("launcher.pyw")[1][:80], "一键登录.vbs 不该带 --wait（那是开机自启用的）")
+
+
+def test_stdlib_only():
+    """守住「零依赖」这条底线：源码里只能 import 标准库（和项目内模块）。"""
+    allowed_local = {"core", "gui", "tests", "custom_hook"}
+    stdlib = set(sys.stdlib_module_names)
+    pattern = re.compile(r"^\s*(?:from|import)\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
+    offenders: list[str] = []
+    for folder in ("", "core", "gui", "tests"):
+        base = os.path.join(ROOT, folder)
+        for filename in sorted(os.listdir(base)):
+            if not filename.endswith((".py", ".pyw")):
+                continue
+            full = os.path.join(base, filename)
+            with open(full, encoding="utf-8", errors="replace") as fh:
+                source = fh.read()
+            for module in pattern.findall(source):
+                if module in stdlib or module in allowed_local:
+                    continue
+                offenders.append(f"{os.path.join(folder, filename)}: {module}")
+    expect(not offenders, "引入了第三方依赖（本工具要求零依赖）：" + "；".join(offenders))
 
 
 def test_gui_imports():
@@ -584,11 +712,18 @@ def main() -> int:
         ("表单字段编码", test_form_encoding),
         ("原始模板参数编码", test_body_template_escaping),
         ("预览不泄露密码", test_preview_masks_password),
+        ("密码别名也编码", test_secret_alias_escaping),
+        ("JSON 请求体不编码密码", test_json_body_keeps_password_raw),
+        ("配置结构写错给提示", test_config_type_errors),
+        ("凭据文件结构容错", test_credentials_bad_shape),
+        ("确定性失败不重试", test_definitive_failure_not_retried),
         ("账号密码 DPAPI 加密", test_dpapi_roundtrip),
         ("配置校验", test_config_validation),
         ("配置：BOM / 编码容错", test_config_bom_and_gbk),
         ("开机自启命令", test_autostart_command),
         ("开机自启状态读取", test_autostart_state),
+        ("启动器编码与入口", test_vbs_launchers_utf16),
+        ("零依赖：只用标准库", test_stdlib_only),
         ("桌面快捷方式生成", test_shortcut_creation),
         ("界面模块可导入", test_gui_imports),
         ("自定义钩子", test_custom_hook),
