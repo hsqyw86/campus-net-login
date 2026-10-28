@@ -33,6 +33,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 from core import (  # noqa: E402
+    __version__,
     autostart,
     config as config_mod,
     doctor,
@@ -218,6 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="login.py", description="校园网一键登录（通用 Portal 认证）", add_help=True
     )
+    parser.add_argument("--version", action="version", version=f"campus-net-login {__version__}")
     parser.add_argument("--config", help="指定配置文件（默认项目目录下的 config.json）")
     parser.add_argument("--quiet", action="store_true", help="不打印过程信息（只写日志）")
     sub = parser.add_subparsers(dest="command")
