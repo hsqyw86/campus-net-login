@@ -305,6 +305,16 @@ GitHub Actions（`.github/workflows/ci.yml`）会在每次提交时用 Python 3.
 
 ---
 
+## 参与
+
+- 想让工具支持你们学校那套认证：先试 `custom_hook.py`，实在不行再动核心，别往核心里塞 if。
+- 提问题请带上 `python login.py doctor` 的输出，以及**把值换成 x** 的登录请求；细节见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+- 「只用 Python 标准库」是硬约束，PR 请守住。
+
+许可：[MIT](LICENSE)。
+
+---
+
 ## English
 
 One-click campus network (captive portal) login for Windows — vendor-agnostic.
@@ -315,3 +325,5 @@ JSON or keyword verdict, optional connectivity check. Credentials are encrypted 
 machine-bound). Add a desktop shortcut or autostart and it just works.
 
 Pure Python 3.10+ standard library — no `pip install`, no admin rights. MIT licensed.
+
+Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).

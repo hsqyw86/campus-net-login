@@ -1,0 +1,71 @@
+name: 登录不上 / 用不了
+description: 配置或登录失败，需要贴一些脱敏信息
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        先跑一次 `python login.py doctor`，它会把该看的都列出来。**贴之前把账号、密码、token 换成 x。**
+
+  - type: textarea
+    id: symptom
+    attributes:
+      label: 现象
+      description: 双击之后发生了什么？卡在哪一步？有没有弹窗？
+      placeholder: 双击 一键登录.vbs 之后没有任何反应 / 提示"登录似乎没有成功"
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: doctor 输出
+      description: 命令行运行 `python login.py doctor`，把输出整段贴进来（账号会自动打码）。
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: vendor
+    attributes:
+      label: 认证系统
+      options:
+        - 深澜 srun
+        - 锐捷 ePortal
+        - H3C
+        - 华为
+        - 城市热点 Dr.COM
+        - 认不出 / 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: request
+    attributes:
+      label: 登录请求的结构（值请替换成 x）
+      description: 浏览器 F12 → Network → 手动登录一次 → 找到那条请求 → 右键 Copy as cURL。把值都换成 x 再贴。
+      render: shell
+      placeholder: |
+        curl 'http://x/eportal/portal/login?userip=x&wlanacname=x&token=x' -X POST \
+          -H 'Content-Type: application/x-www-form-urlencoded' \
+          --data-raw 'userId=x&password=x&token=x'
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: 日志
+      description: 贴 `logs/login.log` 的最后 20 行左右，密码和 token 已被打码。
+      render: text
+    validations:
+      required: false
+
+  - type: input
+    id: env
+    attributes:
+      label: 环境
+      description: Windows 版本 + Python 版本
+      placeholder: Windows 11 23H2 / Python 3.14.0
+    validations:
+      required: true
