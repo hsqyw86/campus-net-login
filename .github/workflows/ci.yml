@@ -6,6 +6,11 @@ on:
   pull_request:
   workflow_dispatch:
 
+# 连续 push 时只保留最新一次，省得旧提交排队占着 runner
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Python ${{ matrix.python }}
@@ -14,11 +19,13 @@ jobs:
       fail-fast: false
       matrix:
         python: ["3.10", "3.11", "3.12", "3.13"]
+    permissions:
+      contents: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
 
