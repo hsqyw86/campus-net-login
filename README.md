@@ -114,11 +114,11 @@ campus-net-login/
 │   ├── doctor.py           ← 自检（把「为什么登不上」拆成可项检查）
 │   ├── runner.py           ← 「已联网就跳过 → 等网关 → 登录」流程
 │   ├── config.py           ← 配置读写与校验
-│   ├── net.py              ← 联网探测、本机 IP
+│   ├── net.py              ← 联网探测、本机 IP、挑去网关的网卡
 │   └── paths.py            ← 路径与日志位置
 ├── gui/setup_app.py        ← 设置向导界面
 ├── docs/screenshot-setup.png
-├── .github/workflows/ci.yml ← 每次提交自动跑 46 项测试
+├── .github/workflows/ci.yml ← 每次提交自动跑 53 项测试
 ├── tests/                  ← 测试（含本地假认证服务器）
 └── LICENSE                 ← MIT
 ```
@@ -179,7 +179,8 @@ campus-net-login/
 | `login.auto_referer` | 自动带上 `Referer`（默认开，很多服务器要） |
 | `login.escape_form` | 原始文本请求体里，账号密码做 URL 编码（默认开） |
 | `login.insecure_tls` | 认证页是自签名 HTTPS 时设为 `true` |
-| `verify.url` / `verify.expect_status` | 联网复核用的地址，默认 `generate_204` → 期望 204 |
+| `verify.url` / `verify.expect_status` | 联网复核用的地址，默认 `https://connect.rom.miui.com/generate_204` → 期望 204。**建议用 https**：不少校园网只放行 443，80 端口会被认证网关拦住 |
+| `verify.source_ip` | 一般不填。填了就只从这个本机地址发包（多网卡时强制走某块网卡） |
 | `retry.attempts` / `interval` / `max_interval` | 失败重试次数 / 首次间隔秒数 / 退避上限（默认 30，间隔按 2× 翻倍，带 ±15% 抖动） |
 | `network.wait_timeout` | 开机自启时等校园网就绪的最长秒数（默认 90） |
 | `ui.notify_on_success` | 手动双击登录成功后右下角飘一条提示（默认开；开机自启带 `--quiet`，不会弹） |
@@ -291,6 +292,8 @@ def transform_password(username, password, variables) -> str:
 | 提示「配置文件不是合法 JSON」 | 手改过 `config.json`：多半是记事本存成了 ANSI/GBK。用 UTF-8 保存，或直接让设置向导重存一次 |
 | 开机没自动登录 | `python login.py autostart status` 看是否写入；若被组策略限制，会退化到「启动」文件夹里的快捷方式 |
 | 每次都要重新登录 | 校园网本身有会话时长限制；可把 `retry` 用在计划任务里定时跑（本工具默认只做「一次登录」） |
+| **开着 VPN / 代理时，程序说「已联网」但网页打不开** | 常见于 TUN 类代理：默认路由被虚拟网卡（`198.18.x.x`）接管，探测包走代理当然通。程序会自动挑「去网关的那块真网卡」发探测、并且**不走系统代理**；实在挑错就手填 `verify.source_ip`（`python login.py check` 里会显示它在用哪块网卡） |
+| 探测永远超时（但确实能上网） | 多数校园网只放行 443，80 端口被认证网关拦着：把 `verify.url` 换成 https 地址（默认已是 https） |
 
 失败时命令行和弹窗都会多给一句**提示**（例如「连不上网关」「网关直接拒了这次请求」「接口说过了但实际没网」）。
 它只在能确定方向时才出现——猜错方向的建议比没有建议更坏，所以拿不准时它会只说「网关的原话是……」，把判断权留给你。
@@ -300,7 +303,7 @@ def transform_password(username, password, variables) -> str:
 ## 测试
 
 ```bat
-python tests\run_tests.py     :: 45 项：cURL 解析、模板、加密、判定、退避重试、自检、启动器编码、零依赖、端到端登录（本地假服务器）
+python tests\run_tests.py     :: 53 项：cURL 解析、模板、加密、判定、退避重试、自检、网卡/代理、启动器编码、零依赖、端到端登录（本地假服务器）
 python tests\gui_smoke.py     :: 界面冒烟：控件、布局、cURL 导入、明文拦截
 python tests\mock_portal.py 8099   :: 单独起一个假认证服务器手动玩
 ```
@@ -308,7 +311,7 @@ python tests\mock_portal.py 8099   :: 单独起一个假认证服务器手动玩
 `tests/mock_portal.py` 是一个模拟的 Portal 认证服务器（预跳转下发 Cookie 和 token、校验 md5 密码、返回 JSON），
 端到端测试就是拿它跑通的，不需要真的连校园网。
 
-GitHub Actions（`.github/workflows/ci.yml`）会在每次提交时用 Python 3.10 / 3.11 / 3.12 / 3.13 各跑一遍：语法编译 → 46 项测试 → 命令行冒烟（拿 `config.example.json` 跑真实的 `preview` / `check` / `doctor`）。
+GitHub Actions（`.github/workflows/ci.yml`）会在每次提交时用 Python 3.10 / 3.11 / 3.12 / 3.13 各跑一遍：语法编译 → 53 项测试 → 命令行冒烟（拿 `config.example.json` 跑真实的 `preview` / `check` / `doctor`）。
 
 ---
 

@@ -12,6 +12,7 @@ import contextlib
 import hashlib
 import io
 import json
+import logging
 import os
 import random
 import re
@@ -36,6 +37,7 @@ from core import (  # noqa: E402
     curlparse,
     doctor,
     importcurl,
+    net,
     paths,
     portal,
     runner,
@@ -737,6 +739,78 @@ def test_clipboard_reader_is_safe():
     expect(isinstance(text, str), f"应返回字符串，实际 {type(text)}")
 
 
+DRCOM_GET_CURL = """curl --url 'http://10.0.0.2/drcom/login?callback=dr1003&DDDDD=13800138000&upass=Plain!Pass1&0MKKey=123456&v=7810' \\
+  -H 'Referer: http://10.0.0.2/a79.htm'"""
+
+
+def test_import_curl_get_query_params():
+    """GET 请求的账号密码在地址参数里（Dr.COM 就是这样）。"""
+    report = importcurl.from_text(DRCOM_GET_CURL)
+    login = report.cfg["login"]
+    expect(login["method"] == "GET", f"应识别成 GET：{login['method']}")
+    expect(login["fields"].get("DDDDD") == "{username}", f"账号参数没换掉：{login['fields']}")
+    expect(login["fields"].get("upass") == "{password}", f"密码参数没换掉：{login['fields']}")
+    expect("?" not in login["url"], f"参数应从地址里搬到 fields：{login['url']}")
+    expect(report.username == "13800138000" and report.password == "Plain!Pass1", "凭据应被取出")
+    expect(report.cfg["expect"]["json_path"] == "result", "Dr.COM 应按 result 判成败")
+    expect(report.cfg["expect"]["json_equals"] == "1", "Dr.COM 成功值是 1")
+
+
+def test_jsonp_judgement():
+    """dr1003({...}) 这种 JSONP 包着的回包也要能按 JSON 规则判定。"""
+    cfg = {"expect": {"json_path": "result", "json_equals": "1"}}
+    ok, why = portal.judge(cfg, 200, ' dr1003({"result":1,"uid":"20230001"}) ')
+    expect(ok is True, f"result=1 应判成功，实际 {ok} / {why}")
+    bad, why = portal.judge(cfg, 200, 'dr1003({"result":0,"msg":"E2531 密码错误"})')
+    expect(bad is False, f"result=0 应判失败，实际 {bad}")
+    expect("E2531" in why or "密码错误" in why, f"失败原因应说清楚：{why}")
+
+
+def test_extract_message_skips_bare_json():
+    """只有数字的回包不该整段糊到界面上。"""
+    expect(portal.extract_message('dr1003({"result":1,"olno":0,"ufee":30000})') == "", "无消息时应收成空串")
+    expect("密码错误" in portal.extract_message('dr1003({"result":0,"msg":"E2531 密码错误"})'), "有 msg 要抠出来")
+    expect(portal.extract_message('{"result":1}') == "", "简单 JSON 也不该原样返回")
+
+
+def test_get_password_never_logged():
+    """GET 登录时密码在地址里，日志和预览都不能出现明文。"""
+    cfg = config_mod.normalize(
+        {
+            "preflight": {"url": ""},
+            "login": {
+                "url": "http://127.0.0.1:9/drcom/login",
+                "method": "GET",
+                "fields": {"DDDDD": "{username}", "upass": "{password}", "0MKKey": "123456"},
+            },
+            "expect": {"success_keywords": ["ok"]},
+        }
+    )
+    variables = portal.build_variables(cfg, "13800138000", "Plain!Pass1")
+    request = portal.build_request(cfg, variables)
+    expect("Pass1" in request.url, f"前提：地址里确实带着密码（会做 URL 转义）：{request.url}")
+    shown = request.preview()
+    expect("Pass1" not in shown, f"预览泄漏了密码：{shown}")
+    expect("***" in shown, f"预览里应看到打码：{shown}")
+    expect("13800138000" not in shown, f"预览泄漏了账号：{shown}")
+
+    # 再验一遍真日志
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    log = logging.getLogger("campusnet.portal")
+    log.addHandler(handler)
+    old_level = log.level
+    log.setLevel(logging.DEBUG)
+    try:
+        portal.login(cfg, "13800138000", "Plain!Pass1", verify=False)
+    finally:
+        log.setLevel(old_level)
+        log.removeHandler(handler)
+    logged = stream.getvalue()
+    expect("Pass1" not in logged, f"日志里出现了明文密码：{logged[:300]}")
+    expect("13800138000" not in logged, f"日志里出现了明文账号：{logged[:300]}")
+
+
 def test_runner_skips_when_online():
     with MockPortal() as srv:
         cfg = make_cfg(srv.base_url)
@@ -858,6 +932,54 @@ def test_doctor_missing_config():
         expect("✗" in item.line(), "问题项输出缺叉号")
 
 
+# ------------------------------------------------------------ 网卡 / 代理
+
+def test_probe_ignores_system_proxy():
+    """探测不认系统代理：设了代理也得直连，否则「开 VPN 就永远算在线」。"""
+    keys = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
+    saved = {k: os.environ.get(k) for k in keys}
+    with MockPortal() as srv:
+        try:
+            for k in keys:
+                os.environ[k] = "http://127.0.0.1:9"  # 一个肯定没人监听的端口
+            res = net.http_probe(srv.base_url + "/generate_204", timeout=5)
+        finally:
+            for k, value in saved.items():
+                if value is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = value
+        expect(res.status == 204, f"探测被系统代理带走了：status={res.status} err={res.error}")
+
+
+def test_campus_nic_prefers_physical():
+    """多网卡时按「先真网卡、后虚拟网卡」排序；绑定源地址的请求能正常发出去。"""
+    original = net.local_ips
+    net.local_ips = lambda: ["198.18.0.1", "10.117.31.175", "10.0.0.9"]
+    try:
+        ordered = net._candidate_ips()
+    finally:
+        net.local_ips = original
+    expect(ordered == ["10.117.31.175", "10.0.0.9", "198.18.0.1"], f"网卡排序不对：{ordered}")
+    with MockPortal() as srv:
+        res = net.http_probe(srv.base_url + "/generate_204", timeout=5, source_ip="127.0.0.1")
+        expect(res.status == 204, f"绑源地址的请求发不出去：status={res.status} err={res.error}")
+    expect(net.campus_ip("127.0.0.1") == "", "网关是本机时不该挑网卡")
+    expect(net.campus_ip("") == "", "没有网关时不该挑网卡")
+    expect(net._is_virtual_ip("198.18.0.1") and net._is_virtual_ip("169.254.3.4"), "虚拟网卡判定漏了")
+    expect(not net._is_virtual_ip("10.117.31.175"), "真实网卡被当成虚拟网卡了")
+
+
+def test_campus_source_ip_survives_bad_gateway():
+    """配置里网关不可达时也要能返回一个源地址或空串，不能抛异常。"""
+    with MockPortal() as srv:
+        cfg = make_cfg(srv.base_url)
+    cfg["preflight"]["url"] = "http://192.0.2.1/portal"  # TEST-NET-1，必然不可达
+    source = runner.campus_source_ip(cfg)
+    expect(isinstance(source, str), f"返回值应为字符串：{source!r}")
+    expect(runner.campus_source_ip({}) == "", "没有配置时应返回空串")
+
+
 # ------------------------------------------------------------------ 入口
 
 def main() -> int:
@@ -901,6 +1023,10 @@ def main() -> int:
         ("导入：垃圾输入要拒绝", test_import_curl_rejects_garbage),
         ("导入：CLI 预览不落盘不打码", test_import_curl_cli_preview),
         ("导入：读剪贴板不崩进程", test_clipboard_reader_is_safe),
+        ("导入：GET 请求的参数在地址里", test_import_curl_get_query_params),
+        ("判定：JSONP 回包按 JSON 规则", test_jsonp_judgement),
+        ("提示：纯数字回包不糊到界面", test_extract_message_skips_bare_json),
+        ("安全：GET 登录的密码不进日志", test_get_password_never_logged),
         ("流程：已联网时跳过", test_runner_skips_when_online),
         ("流程：强制登录", test_runner_login_with_force),
         ("CLI：login 退出码", test_cli_end_to_end),
@@ -908,6 +1034,9 @@ def main() -> int:
         ("自检：全部正常", test_doctor_all_ok),
         ("自检：认证页连不上时只提示", test_doctor_offline_preflight),
         ("自检：缺少配置时报问题", test_doctor_missing_config),
+        ("网卡：探测不认系统代理", test_probe_ignores_system_proxy),
+        ("网卡：优先真网卡并绑源探测", test_campus_nic_prefers_physical),
+        ("网卡：网关不可达也不抛异常", test_campus_source_ip_survives_bad_gateway),
     ]
     print(f"Python {sys.version.split()[0]}  项目目录 {ROOT}\n")
     try:

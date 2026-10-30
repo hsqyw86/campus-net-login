@@ -30,7 +30,27 @@ def is_online(cfg: dict, timeout: float = 6.0) -> tuple[bool, str]:
     settings = portal.verify_settings(cfg)
     if not settings["enabled"]:
         return False, "未启用联网探测，无法判断是否已联网"
-    return net.online(settings["url"], settings["expect_status"], timeout)
+    return net.online(settings["url"], settings["expect_status"], timeout, source_ip=campus_source_ip(cfg))
+
+
+def campus_source_ip(cfg: dict) -> str:
+    """去网关会走哪块网卡的 IP。
+
+    开着 VPN/TUN 时默认路由是虚拟网卡（如 198.18.0.1），
+    从那里探测外网永远是「已联网」，校园网其实没认证——所以要用网关侧的地址发探测。
+    """
+    gateway = ""
+    explicit = str(((cfg.get("verify") or {}).get("source_ip") or "")).strip()
+    if explicit:
+        return explicit
+    for key in ("preflight", "login"):
+        host = net.url_host_port((cfg.get(key) or {}).get("url") or "")[0]
+        if host and not host.startswith("{"):
+            gateway = host
+            break
+    if not gateway:
+        return ""
+    return net.campus_ip(gateway)
 
 
 def _probe_target(cfg: dict, username: str, password: str) -> str:

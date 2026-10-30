@@ -125,9 +125,13 @@ def cmd_check(args) -> int:
         print(f"已保存账号：✗ {exc}")
 
     settings = portal.verify_settings(cfg or {})
-    online, why = net.online(settings["url"], settings["expect_status"], settings["timeout"])
+    source = runner.campus_source_ip(cfg or {})
+    online, why = net.online(settings["url"], settings["expect_status"], settings["timeout"], source_ip=source)
     print(f"当前联网：{'✓ ' if online else '✗ '}{why}")
-    print(f"本机 IP：{net.local_ip()}")
+    if source:
+        print(f"本机 IP：{source}（探测走这块网卡）")
+    else:
+        print(f"本机 IP：{net.local_ip()}")
     print(f"开机自动登录：{'已开启' if autostart.is_enabled() else '未开启'}")
     state = config_mod.load_state()
     if state.get("last_check"):

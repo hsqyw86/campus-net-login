@@ -10,7 +10,7 @@ import os
 import sys
 from dataclasses import dataclass
 
-from . import autostart, config as config_mod, net, paths, portal, secrets
+from . import autostart, config as config_mod, net, paths, portal, runner, secrets
 
 OK = "ok"
 BAD = "bad"
@@ -118,10 +118,23 @@ def _check_network(probe: bool, cfg: dict | None = None) -> Check:
         settings = portal.verify_settings(cfg)
         if not settings["enabled"]:
             return Check("联网探测", INFO, "配置里关掉了联网探测")
-        online, why = net.online(settings["url"], settings["expect_status"], settings["timeout"])
+        source = _campus_source(cfg)
+        online, why = net.online(
+            settings["url"], settings["expect_status"], settings["timeout"], source_ip=source
+        )
+        if source:
+            why = f"{why}（走网卡 {source}）"
     else:
         online, why = net.online()
     return Check("联网探测", OK if online else INFO, why)
+
+
+def _campus_source(cfg: dict) -> str:
+    """探测该走哪块网卡；拿不到就返回空串（退回系统默认路由）。"""
+    try:
+        return runner.campus_source_ip(cfg)
+    except Exception:  # pragma: no cover - 自检不能因为这一步挂掉
+        return ""
 
 
 def run(config_path: str | None = None, *, probe: bool = True, verbose: bool = True) -> list[Check]:

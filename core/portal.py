@@ -91,7 +91,8 @@ class RenderedRequest:
     body_text: str = ""
 
     def preview(self, mask: bool = True) -> str:
-        lines = [f"{self.method} {self.url}"]
+        head = f"{self.method} {_mask_secret(self.url) if mask else self.url}"
+        lines = [head]
         for key, value in self.headers.items():
             if mask and key.lower() in ("cookie", "authorization"):
                 value = _mask_secret(value)
@@ -164,9 +165,32 @@ def _diagnose(
     return ""
 
 
+_SECRET_KEYS = r"(password|passwd|pwd|upass|pass)"
+
+# 这次登录真正用到的账号/密码值。日志里按「值」打码，比按字段名靠得住：
+# Dr.COM 把密码叫 upass，华为叫 password，还有的只叫 p，按名字总会漏。
+_REDACT_VALUES: set[str] = set()
+
+
+def remember_secrets(*values) -> None:
+    """把这次登录的敏感值登记下来，之后所有日志/预览里出现它们都会变成 ***。"""
+    for value in values:
+        text = str(value or "")
+        if len(text) >= 3:  # 太短的值（如 "1"）替换会误伤正常内容
+            _REDACT_VALUES.add(text)
+
+
+def forget_secrets() -> None:
+    _REDACT_VALUES.clear()
+
+
 def _mask_secret(text: str, limit: int = 400) -> str:
-    text = re.sub(r"(password|passwd|pwd)=([^&\s\"]+)", r"\1=***", text, flags=re.I)
-    text = re.sub(r'"(password|passwd|pwd)"\s*:\s*"[^"]*"', r'"\1":"***"', text, flags=re.I)
+    text = str(text or "")
+    for value in sorted(_REDACT_VALUES, key=len, reverse=True):  # 先替换长的，避免部分残留
+        if value in text:
+            text = text.replace(value, "***")
+    text = re.sub(_SECRET_KEYS + r"=([^&\s\"']+)", r"\1=***", text, flags=re.I)
+    text = re.sub(r'"' + _SECRET_KEYS + r'"\s*:\s*"[^"]*"', r'"\1":"***"', text, flags=re.I)
     text = re.sub(r"(JSESSIONID|SESSION|token)=([^;&\s]+)", r"\1=***", text, flags=re.I)
     return text[:limit]
 
@@ -233,6 +257,17 @@ def build_variables(cfg: dict, username: str, password: str) -> dict:
     }
     tpl = (cfg.get("login") or {}).get("password_template") or "{password}"
     variables["password"] = render(tpl, variables, "login.password_template")
+    # 明文密码、变形、最终发出的值都登记下来，日志里按值打码
+    remember_secrets(
+        username,
+        password,
+        variables["password"],
+        md5,
+        md5.upper(),
+        sha1,
+        b64,
+        variables["urlquote"],
+    )
 
     hook = load_hook()
     if hook is not None and hasattr(hook, "transform_password"):
@@ -459,6 +494,24 @@ def build_request(cfg: dict, variables: dict, *, escape_form: bool | None = None
 
 # ------------------------------------------------------------------ 判定
 
+_JSONP_RE = re.compile(r"^\s*[A-Za-z_$][\w$.]*\s*\(\s*(.*?)\s*\)\s*;?\s*$", re.S)
+
+
+def _strip_jsonp(text: str) -> str:
+    """把 JSONP 包装剥掉：`dr1003({...})` → `{...}`。
+
+    Dr.COM 这类网关的回调就是 `dr1003({"result":1,...})`，
+    不剥的话按 JSON 规则判定会直接失败。
+    """
+    s = (text or "").strip()
+    if not s or s[0] in "{[":
+        return s
+    match = _JSONP_RE.match(s)
+    if match and match.group(1)[:1] in "{[":
+        return match.group(1)
+    return s
+
+
 def _json_get(payload, path: str):
     cur = payload
     for part in str(path).split("."):
@@ -478,7 +531,7 @@ def _json_get(payload, path: str):
 
 def extract_message(body: str, limit: int = 160) -> str:
     """从响应里尽量抠一句人话出来，用于提示用户。"""
-    text = (body or "").strip()
+    text = _strip_jsonp(body).strip()
     if not text:
         return ""
     if text.startswith(("{", "[")):
@@ -496,6 +549,9 @@ def extract_message(body: str, limit: int = 160) -> str:
                         sv = value.get(sub)
                         if isinstance(sv, str) and sv.strip():
                             return sv.strip()[:limit]
+            # 结构里没有一句人话（Dr.COM 只回 result:1 和一堆数字），
+            # 就别把整段 JSON 糊到界面上——调用方会用自己的「登录成功」
+            return ""
     if text.startswith("<"):
         stripped = re.sub(r"<script.*?</script>|<style.*?</style>", " ", text, flags=re.S | re.I)
         stripped = re.sub(r"<[^>]+>", " ", stripped)
@@ -521,7 +577,7 @@ def judge(cfg: dict, status: int, body: str) -> tuple[bool | None, str]:
 
     if path:
         try:
-            payload = json.loads(body or "")
+            payload = json.loads(_strip_jsonp(body))
         except json.JSONDecodeError:
             return None, message or "响应不是合法 JSON，无法按 JSON 规则判定"
         try:
@@ -533,7 +589,7 @@ def judge(cfg: dict, status: int, body: str) -> tuple[bool | None, str]:
             ok = bool(value) and str(value).lower() not in ("0", "false", "fail", "failed", "error")
         else:
             ok = str(value).strip().lower() == str(expected).strip().lower()
-        return ok, message or f"{path} = {value}"
+        return ok, message or ("认证成功" if ok else f"{path} = {value}")
 
     text = body or ""
     for keyword in expect.get("failure_keywords") or []:
@@ -645,7 +701,7 @@ def _attempt(cfg: dict, variables: dict, session: Session, *, verify: bool) -> L
     )
     result = LoginResult(
         status=res.status,
-        url=request.url,
+        url=_mask_secret(request.url, 2000),
         body=res.body,
         request_preview=request.preview(),
     )
@@ -726,6 +782,7 @@ def login(
     """执行一次完整登录（含预跳转、重试）。"""
     log = log or logger
     started = time.time()
+    forget_secrets()  # 上一次登录的值不该留在打码表里
     try:
         variables = build_variables(cfg, username, password)
     except ConfigProblem as exc:
@@ -773,6 +830,8 @@ def login(
 
         last.attempts = index
         last.elapsed = time.time() - started
+        # 失败原因里会带上整条请求地址（GET 登录时密码就在地址里），落日志前先打码
+        last.message = _mask_secret(last.message, 800)
         if last.ok:
             log.info("第 %s 次尝试登录成功：%s", index, last.message)
             return last

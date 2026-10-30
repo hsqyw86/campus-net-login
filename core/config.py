@@ -63,9 +63,10 @@ DEFAULT_CONFIG: dict = {
     },
     "verify": {
         "enabled": True,
-        "url": "http://connect.rom.miui.com/generate_204",
+        "url": "https://connect.rom.miui.com/generate_204",
         "expect_status": 204,
         "timeout": 6,
+        "source_ip": "",
     },
     "retry": {"attempts": 2, "interval": 2.0, "max_interval": 30.0},
     "network": {"wait_timeout": 90, "wait_interval": 2.0},
@@ -215,6 +216,8 @@ def validate(cfg: dict, strict: bool = True) -> list[str]:
     verify = _as_dict(cfg, "verify", problems)
     _as_number(verify, "timeout", "verify.timeout", problems, minimum=0)
     _as_number(verify, "expect_status", "verify.expect_status", problems, minimum=100)
+    if not isinstance(verify.get("source_ip", ""), str):
+        problems.append("verify.source_ip 要写成一个本机 IP（例如 10.117.31.175），不想指定就留空")
 
     # 超时写错（比如 "10s"）会在真正发请求那一刻炸成 ValueError，
     # 提前在这里拦住，用户看到的才是人话。

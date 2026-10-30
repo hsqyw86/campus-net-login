@@ -41,8 +41,9 @@
   },
   "verify": {
     "enabled": true,
-    "url": "http://connect.rom.miui.com/generate_204",
+    "url": "https://connect.rom.miui.com/generate_204",
     "expect_status": 204,
+    "source_ip": "",
     "timeout": 6
   },
   "retry": {

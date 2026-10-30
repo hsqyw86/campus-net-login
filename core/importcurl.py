@@ -37,6 +37,7 @@ class ImportReport:
     user_field: str = ""
     pass_field: str = ""
     password_is_hash: bool = False
+    url_without_query: str = ""
     notes: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -153,6 +154,19 @@ def from_text(text: str, base: dict | None = None) -> ImportReport:
     if not values:
         values = req.field_values()
 
+    # GET 请求没有请求体，账号密码全在地址栏的参数里（Dr.COM 这类就是）。
+    # 把这些参数拆成字段，好处是密码会被正确转义，日志也好打码。
+    query_params = False
+    if not values and not (req.body or "").strip():
+        parts = urllib.parse.urlsplit(req.url)
+        pairs = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+        if pairs:
+            values = dict(pairs)
+            query_params = True
+            clean = urllib.parse.urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+            report.url_without_query = clean
+            report.notes.append("这是 GET 请求，参数都在地址里：我按 URL 参数来认字段，密码会做转义")
+
     user_field, pass_field = _guess_from_names(list(values), values)
     report.user_field = user_field
     report.pass_field = pass_field
@@ -177,7 +191,7 @@ def from_text(text: str, base: dict | None = None) -> ImportReport:
 
     cfg = config_mod.normalize(base or {})
     login = cfg["login"]
-    login["url"] = req.url
+    login["url"] = report.url_without_query or req.url
     login["method"] = req.method or "POST"
     login["content_type"] = req.content_type if req.content_type in ("form", "json", "raw") else "form"
     login["headers"] = {
@@ -226,6 +240,16 @@ def from_text(text: str, base: dict | None = None) -> ImportReport:
 
     if "cookie" in {k.lower() for k in (req.headers or {})}:
         report.notes.append("请求里的 Cookie 已忽略：登录前会重新访问一次跳转页，拿新的会话")
+
+    # Dr.COM：回调用 dr1003({...}) 包着，成功是 {"result":1,...}，失败是 {"result":0,"msg":"E2531:..."}
+    if "0mkkey" in {k.lower() for k in values} or "/drcom/" in login["url"].lower():
+        cfg["expect"]["json_path"] = "result"
+        cfg["expect"]["json_equals"] = "1"
+        cfg["expect"]["failure_keywords"] = ["密码错误", "E2531", "E2553", "认证失败", "已欠费"]
+        report.notes.append(
+            "Dr.COM 网关：响应是 JSONP（dr1003({...})），已按 result=1 判成功。"
+            "如果换了网关回包格式，把「成功判定」改回关键字"
+        )
 
     report.cfg = cfg
     return report
