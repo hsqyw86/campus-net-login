@@ -67,7 +67,7 @@ DEFAULT_CONFIG: dict = {
         "expect_status": 204,
         "timeout": 6,
     },
-    "retry": {"attempts": 2, "interval": 2.0},
+    "retry": {"attempts": 2, "interval": 2.0, "max_interval": 30.0},
     "network": {"wait_timeout": 90, "wait_interval": 2.0},
     "ui": {"notify_on_success": True, "notify_on_failure": True},
 }
@@ -206,6 +206,7 @@ def validate(cfg: dict, strict: bool = True) -> list[str]:
     retry = _as_dict(cfg, "retry", problems)
     _as_number(retry, "attempts", "retry.attempts", problems, minimum=1)
     _as_number(retry, "interval", "retry.interval", problems, minimum=0)
+    _as_number(retry, "max_interval", "retry.max_interval", problems, minimum=0)
 
     network = _as_dict(cfg, "network", problems)
     _as_number(network, "wait_timeout", "network.wait_timeout", problems, minimum=0)

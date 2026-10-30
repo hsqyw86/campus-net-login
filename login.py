@@ -8,6 +8,7 @@
     python login.py set-credentials  # 交互式保存账号密码（DPAPI 加密）
     python login.py autostart on|off|status
     python login.py doctor           # 自检：加密、配置、网络
+    python login.py log              # 看最近的日志（双击启动没有控制台时用）
 
 退出码：0 成功（或已联网），1 登录失败，2 配置/账号问题，3 网络未就绪
 """
@@ -92,6 +93,8 @@ def cmd_login(args) -> int:
     print(f"✗ {outcome.message}")
     if outcome.result and outcome.result.detail:
         log.debug("响应内容：%s", outcome.result.detail)
+    if outcome.hint:
+        print(f"  提示：{outcome.hint}")
     if outcome.code == 3:
         print("  看起来现在不在校园网里（或没连上 Wi-Fi）。")
     return outcome.code
@@ -200,6 +203,30 @@ def cmd_autostart(args) -> int:
     return 0
 
 
+def cmd_log(args) -> int:
+    """打印最近的日志行。
+
+    双击启动时没有控制台，出事之后最想知道的就是「刚才到底哪一步失败了」。
+    这条命令不用打开编辑器翻文件，出问题时可以让人直接在终端里贴给我看。
+    """
+    path = paths.LOG_FILE
+    if not os.path.exists(path):
+        print(f"还没有日志文件：{paths.rel(path)}")
+        print("（运行过一两次登录之后才会有）")
+        return 0
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()
+    except OSError as exc:
+        print(f"读日志失败：{exc}")
+        return 1
+    tail = lines[-max(1, args.lines):]
+    print(f"=== {paths.rel(path)}（最后 {len(tail)} 行，共 {len(lines)} 行） ===")
+    for line in tail:
+        print(line.rstrip("\n"))
+    return 0
+
+
 def cmd_doctor(args) -> int:
     print("=== 自检 ===")
     checks = doctor.run(args.config, probe=not args.no_network)
@@ -236,6 +263,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_doctor = sub.add_parser("doctor", help="自检（加密 / 配置 / 模板 / 网络）")
     p_doctor.add_argument("--no-network", action="store_true", help="跳过联网探测")
     p_doctor.set_defaults(func=cmd_doctor, no_network=False)
+
+    p_log = sub.add_parser("log", help="看最近的日志（出问题时用）")
+    p_log.add_argument("-n", "--lines", type=int, default=40, help="显示最后多少行（默认 40）")
+    p_log.set_defaults(func=cmd_log, lines=40)
 
     p_auto = sub.add_parser("autostart", help="开机自动登录开关")
     p_auto.add_argument("action", choices=["on", "off", "status"])

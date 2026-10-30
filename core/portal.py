@@ -17,6 +17,7 @@ import importlib.util
 import json
 import logging
 import os
+import random
 import re
 import socket
 import time
@@ -115,6 +116,52 @@ class LoginResult:
     verified: bool | None = None
     definitive: bool = False  # 服务器给过明确答复（如密码错误），重试没意义还会锁账号
     config_error: bool = False  # 配置本身有问题（不是网络、不是账号）
+    hint: str = ""  # 失败时的一句「接下来该做什么」，只在能确定方向时才填
+
+
+def _first_sentence(text: str, limit: int = 70) -> str:
+    """从网关返回的 HTML/文本里抠出一句人话，用来做提示。"""
+    if not text:
+        return ""
+    plain = re.sub(r"(?is)<(script|style).*?</\1>", " ", str(text))
+    plain = re.sub(r"(?s)<[^>]+>", " ", plain)
+    plain = re.sub(r"\s+", " ", plain).strip()
+    for sep in ("。", "！", "？", ". ", "\n"):
+        if sep in plain:
+            plain = plain.split(sep, 1)[0]
+            break
+    return plain[:limit].strip()
+
+
+def _diagnose(
+    *,
+    status: int = 0,
+    body: str = "",
+    error: str = "",
+    verify_why: str = "",
+) -> str:
+    """失败后给一句方向性的提示。
+
+    只在「能确定是哪一类问题」时才说话——猜错的建议比没有建议更坏。
+    """
+    if error:
+        return "连不上网关：先确认还连着校园 Wi-Fi（或插着网线），再检查登录地址有没有抄错。"
+    if status in (401, 403):
+        return (
+            f"网关直接拒了这次请求（HTTP {status}）：多半是账号密码不对，"
+            "或者请求里少了它要的动态参数——把「登录前跳转」地址填上再试。"
+        )
+    if status >= 500:
+        return f"网关自己出错了（HTTP {status}）：这不是你的问题，过几分钟再试，或者问一下网络中心。"
+    if verify_why:
+        return (
+            "接口那边说过了，但实际还没网：可能这次请求没带上预跳转给的 Cookie，"
+            "也可能是学校还没放行。点「测试登录」看返回体里写了什么。"
+        )
+    snippet = _first_sentence(body)
+    if snippet:
+        return f"网关的原话是「{snippet}」——按它说的改；看不懂就把这句发给网络中心。"
+    return ""
 
 
 def _mask_secret(text: str, limit: int = 400) -> str:
@@ -605,6 +652,7 @@ def _attempt(cfg: dict, variables: dict, session: Session, *, verify: bool) -> L
     if res.error:
         result.ok = False
         result.message = res.error
+        result.hint = _diagnose(error=res.error)
         return result
 
     verdict, message = judge(cfg, res.status, res.body)
@@ -614,6 +662,7 @@ def _attempt(cfg: dict, variables: dict, session: Session, *, verify: bool) -> L
         result.ok = False
         result.definitive = True  # 密码错 / 已欠费这类，服务器已经说清了，别再连发
         result.detail = _mask_secret(res.body, 600)
+        result.hint = _diagnose(status=res.status, body=result.detail)
         return result
 
     if verify:
@@ -626,6 +675,7 @@ def _attempt(cfg: dict, variables: dict, session: Session, *, verify: bool) -> L
             result.ok = False
             result.message = f"{message}（但联网检测没通过：{why}）"
             result.detail = _mask_secret(res.body, 600)
+            result.hint = _diagnose(verify_why=why)
         return result
 
     result.ok = True if verdict is None else verdict
@@ -690,6 +740,10 @@ def login(
     except (TypeError, ValueError):
         attempts = 1
     interval = float(retry.get("interval") or 0)
+    try:
+        max_interval = float(retry.get("max_interval") or 30)
+    except (TypeError, ValueError):
+        max_interval = 30.0
 
     last = LoginResult(ok=False, message="未执行")
     for index in range(1, attempts + 1):
@@ -727,6 +781,11 @@ def login(
             log.info("服务器已明确拒绝，不再重试")
             return last
         if index < attempts and interval > 0:
-            time.sleep(interval)
+            # 指数退避 + 抖动：网关通常是在限流或自己缓过来，固定间隔连撞没意义，
+            # 抖动则避免几台机器（或几个开机自启的客户端）卡在同一秒上撞。
+            delay = min(interval * (2 ** (index - 1)), max_interval)
+            delay *= random.uniform(0.85, 1.15)
+            log.debug("等待 %.1f 秒后重试", delay)
+            time.sleep(delay)
 
     return last

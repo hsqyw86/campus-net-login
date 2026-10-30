@@ -11,7 +11,7 @@
 ## 改完自己先跑
 
 ```
-python tests\run_tests.py        # 应输出「通过 36 / 36，全部通过」
+python tests\run_tests.py        # 应输出「通过 40 / 40，全部通过」
 python tests\gui_smoke.py        # 界面冒烟，应输出「界面冒烟测试通过」
 python login.py doctor --no-network
 ```

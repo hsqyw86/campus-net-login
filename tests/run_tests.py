@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import io
 import json
 import os
 import random
@@ -456,7 +457,7 @@ def test_vbs_launchers_utf16():
 
 def test_stdlib_only():
     """守住「零依赖」这条底线：源码里只能 import 标准库（和项目内模块）。"""
-    allowed_local = {"core", "gui", "tests", "custom_hook"}
+    allowed_local = {"core", "gui", "tests", "custom_hook", "login", "launcher", "setup"}
     stdlib = set(sys.stdlib_module_names)
     pattern = re.compile(r"^\s*(?:from|import)\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
     offenders: list[str] = []
@@ -576,6 +577,71 @@ def test_e2e_retry_then_success():
         cfg["retry"] = {"attempts": 3, "interval": 0.1}
         result = portal.login(cfg, USERNAME, PASSWORD)
         expect(result.ok and result.attempts == 1, f"第一次就该成功：{result.attempts} 次")
+
+
+def test_failure_hint():
+    # 提示只在「能确定是哪一类问题」时才给，猜错方向比没有更坏
+    expect("账号密码" in portal._diagnose(status=403), "403 应提示账号密码/动态参数")
+    expect("连不上" in portal._diagnose(error="connection refused"), "连接失败应提示先看 Wi-Fi")
+    expect("还没网" in portal._diagnose(verify_why="超时"), "复核失败应提示 Cookie/放行")
+    expect(portal._diagnose() == "", "什么信息都没有时不该瞎猜")
+    html = "<html><body><p>密码错误，请重试</p></body></html>"
+    hint = portal._diagnose(status=200, body=html)
+    expect("密码错误" in hint and "<" not in hint, f"应把 HTML 剥成一句人话：{hint!r}")
+
+
+def test_retry_backoff():
+    """重试要退避、要有上限：网关多半在限流，固定间隔连撞没意义。"""
+    with MockPortal() as srv:
+        cfg = make_cfg(srv.base_url)
+        # 预跳转正常，但登录地址打到一个没人听的端口 → 每次都是连接失败
+        cfg["login"]["url"] = "http://127.0.0.1:9/eportal/login"
+        cfg["retry"] = {"attempts": 4, "interval": 0.5, "max_interval": 1.0}
+        waits: list[float] = []
+        real_sleep = portal.time.sleep
+        portal.time.sleep = lambda s: waits.append(s)  # type: ignore[assignment]
+        try:
+            result = portal.login(cfg, USERNAME, PASSWORD, verify=False)
+        finally:
+            portal.time.sleep = real_sleep  # type: ignore[assignment]
+    expect(not result.ok, "连不上的地址不该被判成功")
+    expect(len(waits) == 3, f"4 次尝试之间应该只等 3 次，实际 {len(waits)} 次")
+    expect(waits[1] > waits[0], f"第二次等待应更长（指数退避）：{waits}")
+    expect(max(waits) <= 1.0 * 1.15, f"等待不该超过 max_interval×抖动上限：{waits}")
+    expect(result.hint, "连接失败时应该给出提示")
+
+
+def test_wrong_password_has_hint():
+    with MockPortal() as srv:
+        cfg = make_cfg(srv.base_url)
+        result = portal.login(cfg, USERNAME, "wrong-password", verify=False)
+    expect(not result.ok and result.definitive, "密码错应当是明确失败")
+    expect(result.hint, "密码错时应给一句人话提示")
+
+
+def test_cli_log_tail():
+    import login as cli  # 命令行入口就在项目根目录
+
+    class Args:
+        lines = 5
+
+    with tmpdir() as tmp:
+        path = os.path.join(tmp, "login.log")
+        with open(path, "w", encoding="utf-8") as fh:
+            for i in range(50):
+                fh.write(f"第 {i} 行\n")
+        original = paths.LOG_FILE
+        paths.LOG_FILE = path
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                code = cli.cmd_log(Args())
+        finally:
+            paths.LOG_FILE = original
+    text = out.getvalue()
+    expect(code == 0, f"log 命令应正常退出：{code}")
+    expect("第 49 行" in text and "第 45 行" in text, f"应打印最后 5 行：{text[-200:]}")
+    expect("第 44 行" not in text, "不该多打印一行")
 
 
 def test_runner_skips_when_online():
@@ -732,6 +798,10 @@ def main() -> int:
         ("端到端：账号不存在", test_e2e_unknown_user),
         ("端到端：缺少预跳转会失败", test_e2e_needs_preflight),
         ("端到端：重试配置", test_e2e_retry_then_success),
+        ("失败提示：只说确定的方向", test_failure_hint),
+        ("重试：指数退避与上限", test_retry_backoff),
+        ("失败提示：密码错给人话", test_wrong_password_has_hint),
+        ("CLI：log 看日志尾部", test_cli_log_tail),
         ("流程：已联网时跳过", test_runner_skips_when_online),
         ("流程：强制登录", test_runner_login_with_force),
         ("CLI：login 退出码", test_cli_end_to_end),

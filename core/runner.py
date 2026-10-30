@@ -18,6 +18,7 @@ class Outcome:
     message: str
     result: portal.LoginResult | None = None
     already_online: bool = False
+    hint: str = ""     # 失败时的一句「接下来该做什么」，来自 portal._diagnose
 
 
 def _verify_settings(cfg: dict) -> tuple[str, int]:
@@ -99,7 +100,11 @@ def run_login(
                     last_ok=False,
                     last_message=message,
                 )
-                return Outcome(code=3, message=message)
+                return Outcome(
+                    code=3,
+                    message=message,
+                    hint="先连上校园 Wi-Fi 或插好网线；如果本来就连着，可能是网关临时不通，过几分钟再双击一次。",
+                )
 
     result = portal.login(cfg, username, password, verify=verify, log=log)
     config_mod.save_state(
@@ -113,5 +118,10 @@ def run_login(
     if result.ok:
         return Outcome(code=0, message=result.message, result=result)
     if result.config_error:
-        return Outcome(code=2, message=result.message, result=result)
-    return Outcome(code=1, message=result.message, result=result)
+        return Outcome(
+            code=2,
+            message=result.message,
+            result=result,
+            hint="这是设置里的问题，不是账号问题：双击「设置向导」，重新粘贴一次登录请求再保存。",
+        )
+    return Outcome(code=1, message=result.message, result=result, hint=result.hint)

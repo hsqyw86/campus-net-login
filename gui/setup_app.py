@@ -145,8 +145,9 @@ class SetupApp:
         self.curl_text.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 6))
         bar1 = ttk.Frame(box1)
         bar1.grid(row=2, column=0, columnspan=2, sticky="ew")
-        ttk.Button(bar1, text="解析并填入 ↓", command=self.on_parse_curl).pack(side="left")
-        ttk.Button(bar1, text="清空", command=lambda: self.curl_text.delete("1.0", "end")).pack(side="left", padx=6)
+        ttk.Button(bar1, text="从剪贴板粘贴", command=self.on_paste_clipboard).pack(side="left")
+        ttk.Button(bar1, text="解析并填入 ↓", command=self.on_parse_curl).pack(side="left", padx=6)
+        ttk.Button(bar1, text="清空", command=lambda: self.curl_text.delete("1.0", "end")).pack(side="left")
         ttk.Label(
             bar1,
             text="也可以完全跳过这一步，直接在下面手动填写。",
@@ -500,6 +501,30 @@ class SetupApp:
 
     # ------------------------------------------------------------ 动作
 
+    def on_paste_clipboard(self) -> None:
+        """把剪贴板里的内容填进第 ① 步。
+
+        复制 cURL 之后最常见的卡点是「不知道往哪贴」，所以直接给一个按钮，
+        贴进来之后顺手就解析——省掉一次多余的点击。
+        """
+        try:
+            text = self.root.clipboard_get()
+        except tk.TclError:
+            self.log("剪贴板里没有文字（可能是空的，或者复制的是图片）", "warn")
+            messagebox.showinfo(APP_TITLE, "剪贴板里没有文字。\n先在浏览器开发者工具里右键登录请求 → Copy as cURL。")
+            return
+        text = (text or "").strip()
+        if not text:
+            messagebox.showinfo(APP_TITLE, "剪贴板是空的。")
+            return
+        if not text.lower().lstrip().startswith("curl"):
+            # 允许直接贴一整段浏览器复制的内容，但提示一句，避免贴错东西
+            self.log("剪贴板内容看起来不是 curl 命令，仍然填进去了，请自行确认", "warn")
+        self.curl_text.delete("1.0", "end")
+        self.curl_text.insert("1.0", text)
+        self.log("已从剪贴板填入，正在解析……")
+        self.on_parse_curl()
+
     def on_parse_curl(self) -> None:
         text = self.curl_text.get("1.0", "end").strip()
         try:
@@ -656,11 +681,13 @@ class SetupApp:
                     self.root.after(0, lambda: self.status_label.configure(text="✓ 登录成功", style="Ok.TLabel"))
                 else:
                     self.log(f"✗ 登录失败：{result.message}", "err")
+                    if result.hint:
+                        # 先给方向：多数人看不懂 HTML，但看得懂「账号密码不对」
+                        self.log(f"  提示：{result.hint}", "warn")
                     snippet = (result.detail or "").strip()
                     if snippet:
                         # detail 里密码已经打过码，body 是原文，别往界面上贴
                         self.log(f"  服务器返回：{snippet[:600]}", "warn")
-                    self.log("  排查建议：确认账号密码；确认成功/失败关键字；必要时补「登录前跳转」地址。", "info")
                     self.root.after(0, lambda: self.status_label.configure(text="✗ 登录失败", style="Err.TLabel"))
             except Exception as exc:  # noqa: BLE001
                 self.log(f"✗ 出错：{type(exc).__name__}: {exc}", "err")

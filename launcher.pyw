@@ -211,7 +211,8 @@ def main(argv=None) -> int:
         # 不在校园网内 / 没连 Wi-Fi：开机时很常见，不打扰用户
         return 3
     if notify:
-        detail = outcome.result.detail if outcome.result else ""
+        # 先给方向，再给原始返回：多数人看不懂 HTML，但看得懂「账号密码不对，重新存一次」
+        detail = outcome.hint or (outcome.result.detail if outcome.result else "")
         if ask_open_setup(f"校园网登录失败：\n{outcome.message}", detail):
             open_setup()
     return outcome.code

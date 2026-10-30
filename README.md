@@ -108,7 +108,7 @@ campus-net-login/
 │   └── paths.py            ← 路径与日志位置
 ├── gui/setup_app.py        ← 设置向导界面
 ├── docs/screenshot-setup.png
-├── .github/workflows/ci.yml ← 每次提交自动跑 36 项测试
+├── .github/workflows/ci.yml ← 每次提交自动跑 40 项测试
 ├── tests/                  ← 测试（含本地假认证服务器）
 └── LICENSE                 ← MIT
 ```
@@ -170,7 +170,7 @@ campus-net-login/
 | `login.escape_form` | 原始文本请求体里，账号密码做 URL 编码（默认开） |
 | `login.insecure_tls` | 认证页是自签名 HTTPS 时设为 `true` |
 | `verify.url` / `verify.expect_status` | 联网复核用的地址，默认 `generate_204` → 期望 204 |
-| `retry.attempts` / `interval` | 失败重试次数 / 间隔秒数 |
+| `retry.attempts` / `interval` / `max_interval` | 失败重试次数 / 首次间隔秒数 / 退避上限（默认 30，间隔按 2× 翻倍，带 ±15% 抖动） |
 | `network.wait_timeout` | 开机自启时等校园网就绪的最长秒数（默认 90） |
 | `ui.notify_on_success` | 手动双击登录成功后右下角飘一条提示（默认开；开机自启带 `--quiet`，不会弹） |
 | `ui.notify_on_failure` | 登录失败时弹窗说明原因，并给一个「打开设置向导」的按钮（默认开） |
@@ -202,6 +202,8 @@ python login.py set-credentials     :: 交互式重存账号密码
 python login.py autostart on|off|status
 python login.py doctor              :: 自检（加密、配置、模板、网络）
 python login.py doctor --no-network :: 自检但不联网（离线时用）
+python login.py log                 :: 看最近 40 行日志（双击启动时没控制台，出问题用这个）
+python login.py log -n 200          :: 看最后 200 行
 ```
 
 退出码：`0` 成功或已联网 / `1` 登录失败 / `2` 配置或账号问题 / `3` 网络未就绪。
@@ -273,17 +275,20 @@ def transform_password(username, password, variables) -> str:
 | 登录返回「无会话 / token 无效」 | 缺预跳转：把认证页地址填到「登录前跳转」，让它先取 Cookie 和参数 |
 | 提示「密码错误」但网页能登录 | 密码不是明文提交的：确认「密码处理」是否该用 `{md5}`；仍不行就上 `custom_hook.py` |
 | 登录返回成功但提示联网没通过 | `verify` 地址被学校拦了：把它改成 `http://www.baidu.com` 并把期望状态改成 `200`，或直接关掉 `verify.enabled` |
-| 双击没反应 | 看 `logs/login.log`；若提示找不到 Python，重新运行一次设置向导（它会记录 Python 路径） |
+| 双击没反应 | 看 `logs/login.log`，或直接在终端跑 `python login.py log`（双击启动没有控制台，日志是唯一现场） |
 | 提示「配置文件不是合法 JSON」 | 手改过 `config.json`：多半是记事本存成了 ANSI/GBK。用 UTF-8 保存，或直接让设置向导重存一次 |
 | 开机没自动登录 | `python login.py autostart status` 看是否写入；若被组策略限制，会退化到「启动」文件夹里的快捷方式 |
 | 每次都要重新登录 | 校园网本身有会话时长限制；可把 `retry` 用在计划任务里定时跑（本工具默认只做「一次登录」） |
+
+失败时命令行和弹窗都会多给一句**提示**（例如「连不上网关」「网关直接拒了这次请求」「接口说过了但实际没网」）。
+它只在能确定方向时才出现——猜错方向的建议比没有建议更坏，所以拿不准时它会只说「网关的原话是……」，把判断权留给你。
 
 ---
 
 ## 测试
 
 ```bat
-python tests\run_tests.py     :: 31 项：cURL 解析、模板、加密、判定、自检、启动器编码、零依赖、端到端登录（本地假服务器）
+python tests\run_tests.py     :: 40 项：cURL 解析、模板、加密、判定、退避重试、自检、启动器编码、零依赖、端到端登录（本地假服务器）
 python tests\gui_smoke.py     :: 界面冒烟：控件、布局、cURL 导入、明文拦截
 python tests\mock_portal.py 8099   :: 单独起一个假认证服务器手动玩
 ```
@@ -291,7 +296,7 @@ python tests\mock_portal.py 8099   :: 单独起一个假认证服务器手动玩
 `tests/mock_portal.py` 是一个模拟的 Portal 认证服务器（预跳转下发 Cookie 和 token、校验 md5 密码、返回 JSON），
 端到端测试就是拿它跑通的，不需要真的连校园网。
 
-GitHub Actions（`.github/workflows/ci.yml`）会在每次提交时用 Python 3.10 / 3.11 / 3.12 / 3.13 各跑一遍：语法编译 → 36 项测试 → 命令行冒烟（拿 `config.example.json` 跑真实的 `preview` / `check` / `doctor`）。
+GitHub Actions（`.github/workflows/ci.yml`）会在每次提交时用 Python 3.10 / 3.11 / 3.12 / 3.13 各跑一遍：语法编译 → 40 项测试 → 命令行冒烟（拿 `config.example.json` 跑真实的 `preview` / `check` / `doctor`）。
 
 ---
 
