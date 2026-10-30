@@ -42,7 +42,10 @@ def campus_source_ip(cfg: dict) -> str:
     gateway = ""
     explicit = str(((cfg.get("verify") or {}).get("source_ip") or "")).strip()
     if explicit:
-        return explicit
+        # 手填的地址要是已经不在本机（换了网段、DHCP 变了），用它发探测只会一律失败，
+        # 那比不填更糟：退回自动挑网卡。
+        if explicit in net.local_ips():
+            return explicit
     for key in ("preflight", "login"):
         host = net.url_host_port((cfg.get(key) or {}).get("url") or "")[0]
         if host and not host.startswith("{"):

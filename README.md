@@ -118,7 +118,7 @@ campus-net-login/
 │   └── paths.py            ← 路径与日志位置
 ├── gui/setup_app.py        ← 设置向导界面
 ├── docs/screenshot-setup.png
-├── .github/workflows/ci.yml ← 每次提交自动跑 53 项测试
+├── .github/workflows/ci.yml ← 每次提交自动跑 54 项测试
 ├── tests/                  ← 测试（含本地假认证服务器）
 └── LICENSE                 ← MIT
 ```
@@ -303,7 +303,7 @@ def transform_password(username, password, variables) -> str:
 ## 测试
 
 ```bat
-python tests\run_tests.py     :: 53 项：cURL 解析、模板、加密、判定、退避重试、自检、网卡/代理、启动器编码、零依赖、端到端登录（本地假服务器）
+python tests\run_tests.py     :: 54 项：cURL 解析、模板、加密、判定、退避重试、自检、网卡/代理、启动器编码、零依赖、端到端登录（本地假服务器）
 python tests\gui_smoke.py     :: 界面冒烟：控件、布局、cURL 导入、明文拦截
 python tests\mock_portal.py 8099   :: 单独起一个假认证服务器手动玩
 ```
@@ -311,7 +311,7 @@ python tests\mock_portal.py 8099   :: 单独起一个假认证服务器手动玩
 `tests/mock_portal.py` 是一个模拟的 Portal 认证服务器（预跳转下发 Cookie 和 token、校验 md5 密码、返回 JSON），
 端到端测试就是拿它跑通的，不需要真的连校园网。
 
-GitHub Actions（`.github/workflows/ci.yml`）会在每次提交时用 Python 3.10 / 3.11 / 3.12 / 3.13 各跑一遍：语法编译 → 53 项测试 → 命令行冒烟（拿 `config.example.json` 跑真实的 `preview` / `check` / `doctor`）。
+GitHub Actions（`.github/workflows/ci.yml`）会在每次提交时用 Python 3.10 / 3.11 / 3.12 / 3.13 各跑一遍：语法编译 → 54 项测试 → 命令行冒烟（拿 `config.example.json` 跑真实的 `preview` / `check` / `doctor`）。
 
 ---
 

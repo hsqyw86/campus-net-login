@@ -980,6 +980,24 @@ def test_campus_source_ip_survives_bad_gateway():
     expect(runner.campus_source_ip({}) == "", "没有配置时应返回空串")
 
 
+def test_stale_source_ip_is_ignored():
+    """手填的 source_ip 已经不在本机时不能硬用（那会让探测一律失败）。"""
+    with MockPortal() as srv:
+        cfg = make_cfg(srv.base_url)
+    cfg["preflight"]["url"] = "http://127.0.0.1/"
+    cfg["verify"]["source_ip"] = "10.255.255.250"  # 本机没有这个地址
+    expect(runner.campus_source_ip(cfg) == "", "失效的 source_ip 应当被忽略")
+
+    original = net.local_ips
+    net.local_ips = lambda: ["10.117.31.175", "198.18.0.1"]
+    cfg["verify"]["source_ip"] = "10.117.31.175"
+    try:
+        picked = runner.campus_source_ip(cfg)
+    finally:
+        net.local_ips = original
+    expect(picked == "10.117.31.175", f"有效的 source_ip 应当被采用，实际 {picked!r}")
+
+
 # ------------------------------------------------------------------ 入口
 
 def main() -> int:
@@ -1037,6 +1055,7 @@ def main() -> int:
         ("网卡：探测不认系统代理", test_probe_ignores_system_proxy),
         ("网卡：优先真网卡并绑源探测", test_campus_nic_prefers_physical),
         ("网卡：网关不可达也不抛异常", test_campus_source_ip_survives_bad_gateway),
+        ("网卡：失效的 source_ip 被忽略", test_stale_source_ip_is_ignored),
     ]
     print(f"Python {sys.version.split()[0]}  项目目录 {ROOT}\n")
     try:
