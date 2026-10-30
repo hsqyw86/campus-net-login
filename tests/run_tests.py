@@ -721,6 +721,22 @@ def test_import_curl_cli_preview():
         expect(not os.path.exists(Args.config), "预览模式不该写配置")
 
 
+def test_clipboard_reader_is_safe():
+    """读剪贴板不能崩进程：非 Windows 要报错而不是崩，Windows 上要返回 str。
+
+    这条是回归测试——之前 ctypes 没声明 restype，64 位下 HANDLE 被截断成 32 位，
+    GlobalLock 直接访问冲突（exit 0xC0000005）。
+    """
+    if os.name != "nt":
+        try:
+            importcurl.read_clipboard()
+        except RuntimeError:
+            return
+        raise AssertionError("非 Windows 上读剪贴板应抛 RuntimeError")
+    text = importcurl.read_clipboard()
+    expect(isinstance(text, str), f"应返回字符串，实际 {type(text)}")
+
+
 def test_runner_skips_when_online():
     with MockPortal() as srv:
         cfg = make_cfg(srv.base_url)
@@ -884,6 +900,7 @@ def main() -> int:
         ("导入：哈希密码原样保存", test_import_curl_hash_password),
         ("导入：垃圾输入要拒绝", test_import_curl_rejects_garbage),
         ("导入：CLI 预览不落盘不打码", test_import_curl_cli_preview),
+        ("导入：读剪贴板不崩进程", test_clipboard_reader_is_safe),
         ("流程：已联网时跳过", test_runner_skips_when_online),
         ("流程：强制登录", test_runner_login_with_force),
         ("CLI：login 退出码", test_cli_end_to_end),

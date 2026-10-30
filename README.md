@@ -118,7 +118,7 @@ campus-net-login/
 │   └── paths.py            ← 路径与日志位置
 ├── gui/setup_app.py        ← 设置向导界面
 ├── docs/screenshot-setup.png
-├── .github/workflows/ci.yml ← 每次提交自动跑 45 项测试
+├── .github/workflows/ci.yml ← 每次提交自动跑 46 项测试
 ├── tests/                  ← 测试（含本地假认证服务器）
 └── LICENSE                 ← MIT
 ```
@@ -308,7 +308,7 @@ python tests\mock_portal.py 8099   :: 单独起一个假认证服务器手动玩
 `tests/mock_portal.py` 是一个模拟的 Portal 认证服务器（预跳转下发 Cookie 和 token、校验 md5 密码、返回 JSON），
 端到端测试就是拿它跑通的，不需要真的连校园网。
 
-GitHub Actions（`.github/workflows/ci.yml`）会在每次提交时用 Python 3.10 / 3.11 / 3.12 / 3.13 各跑一遍：语法编译 → 45 项测试 → 命令行冒烟（拿 `config.example.json` 跑真实的 `preview` / `check` / `doctor`）。
+GitHub Actions（`.github/workflows/ci.yml`）会在每次提交时用 Python 3.10 / 3.11 / 3.12 / 3.13 各跑一遍：语法编译 → 46 项测试 → 命令行冒烟（拿 `config.example.json` 跑真实的 `preview` / `check` / `doctor`）。
 
 ---
 

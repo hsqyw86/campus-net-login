@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import urllib.parse
 from dataclasses import dataclass, field
@@ -49,24 +50,41 @@ class ImportReport:
 
 
 def read_clipboard() -> str:
-    """读 Windows 剪贴板里的文字（ctypes，不需要第三方库）。"""
+    """读 Windows 剪贴板里的文字（ctypes，不需要第三方库）。
+
+    注意：64 位下 HANDLE 是 8 字节，不声明 restype 会被截成 32 位，
+    再拿去 GlobalLock 会直接崩进程（访问冲突）——所以每个调用都把签名写全。
+    """
     import ctypes
+
+    if os.name != "nt":
+        raise RuntimeError("只有 Windows 能读剪贴板")
 
     CF_UNICODETEXT = 13
     user32 = ctypes.windll.user32  # type: ignore[attr-defined]
     kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+
+    user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+    user32.OpenClipboard.restype = ctypes.c_bool
+    user32.GetClipboardData.argtypes = [ctypes.c_uint]
+    user32.GetClipboardData.restype = ctypes.c_void_p
+    user32.CloseClipboard.restype = ctypes.c_bool
+    kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalUnlock.restype = ctypes.c_bool
+
     if not user32.OpenClipboard(None):
         raise RuntimeError("打不开剪贴板：可能被别的程序占用，稍后再试")
     try:
         handle = user32.GetClipboardData(CF_UNICODETEXT)
         if not handle:
             return ""
-        kernel32.GlobalLock.restype = ctypes.c_void_p
         ptr = kernel32.GlobalLock(handle)
         if not ptr:
             return ""
         try:
-            return ctypes.c_wchar_p(ptr).value or ""
+            return ctypes.wstring_at(ptr) or ""
         finally:
             kernel32.GlobalUnlock(handle)
     finally:
@@ -151,6 +169,11 @@ def from_text(text: str, base: dict | None = None) -> ImportReport:
     elif report.password and _HEX40.match(report.password):
         report.password_is_hash = True
         report.notes.append("这条请求里的密码已经是 sha1：我原样保存、原样发送，以后改了密码要重新抓一次")
+    elif report.password:
+        report.notes.append(
+            "密码按原样提交。万一登录失败且提示密码错，可能是这个网站先做了一次 md5："
+            "把配置里 login.password_template 改成 {md5} 再试"
+        )
 
     cfg = config_mod.normalize(base or {})
     login = cfg["login"]
