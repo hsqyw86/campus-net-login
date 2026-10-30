@@ -61,6 +61,15 @@
 
 > 抓不到？先确认 Networks 面板没被过滤，或者勾选 `Fetch/XHR` 后再试一次登录。
 
+**想省掉手抄：** 复制完那条 cURL 之后，在项目目录里跑
+
+```bat
+python login.py import-curl --save
+```
+
+它会直接读剪贴板，写出 `config.json`，并把账号密码从请求里摘出来单独存进 DPAPI
+（配置里只留 `{username}` / `{password}`）。不加 `--save` 就是预览，什么都不写。
+
 ### 第 2 步：配置（双击 `设置向导.vbs`）
 
 1. 把刚才复制的命令**粘贴到「① 粘贴登录请求」的大框**里 → 点 **解析并填入**。
@@ -99,6 +108,7 @@ campus-net-login/
 ├── core/                   ← 核心逻辑
 │   ├── portal.py           ← 认证引擎（预跳转 / 组装请求 / 判定 / 重试）
 │   ├── curlparse.py        ← cURL 解析
+│   ├── importcurl.py       ← 从剪贴板的 cURL 一键生成配置 + 加密凭据
 │   ├── secrets.py          ← DPAPI 加密存储
 │   ├── autostart.py        ← 开机自启、桌面快捷方式
 │   ├── doctor.py           ← 自检（把「为什么登不上」拆成可项检查）
@@ -108,7 +118,7 @@ campus-net-login/
 │   └── paths.py            ← 路径与日志位置
 ├── gui/setup_app.py        ← 设置向导界面
 ├── docs/screenshot-setup.png
-├── .github/workflows/ci.yml ← 每次提交自动跑 40 项测试
+├── .github/workflows/ci.yml ← 每次提交自动跑 45 项测试
 ├── tests/                  ← 测试（含本地假认证服务器）
 └── LICENSE                 ← MIT
 ```
@@ -204,6 +214,8 @@ python login.py doctor              :: 自检（加密、配置、模板、网�
 python login.py doctor --no-network :: 自检但不联网（离线时用）
 python login.py log                 :: 看最近 40 行日志（双击启动时没控制台，出问题用这个）
 python login.py log -n 200          :: 看最后 200 行
+python login.py import-curl         :: 从剪贴板的 cURL 预览导入结果（不落盘）
+python login.py import-curl --save  :: 直接写入 config.json + 加密凭据
 ```
 
 退出码：`0` 成功或已联网 / `1` 登录失败 / `2` 配置或账号问题 / `3` 网络未就绪。
@@ -288,7 +300,7 @@ def transform_password(username, password, variables) -> str:
 ## 测试
 
 ```bat
-python tests\run_tests.py     :: 40 项：cURL 解析、模板、加密、判定、退避重试、自检、启动器编码、零依赖、端到端登录（本地假服务器）
+python tests\run_tests.py     :: 45 项：cURL 解析、模板、加密、判定、退避重试、自检、启动器编码、零依赖、端到端登录（本地假服务器）
 python tests\gui_smoke.py     :: 界面冒烟：控件、布局、cURL 导入、明文拦截
 python tests\mock_portal.py 8099   :: 单独起一个假认证服务器手动玩
 ```
@@ -296,7 +308,7 @@ python tests\mock_portal.py 8099   :: 单独起一个假认证服务器手动玩
 `tests/mock_portal.py` 是一个模拟的 Portal 认证服务器（预跳转下发 Cookie 和 token、校验 md5 密码、返回 JSON），
 端到端测试就是拿它跑通的，不需要真的连校园网。
 
-GitHub Actions（`.github/workflows/ci.yml`）会在每次提交时用 Python 3.10 / 3.11 / 3.12 / 3.13 各跑一遍：语法编译 → 40 项测试 → 命令行冒烟（拿 `config.example.json` 跑真实的 `preview` / `check` / `doctor`）。
+GitHub Actions（`.github/workflows/ci.yml`）会在每次提交时用 Python 3.10 / 3.11 / 3.12 / 3.13 各跑一遍：语法编译 → 45 项测试 → 命令行冒烟（拿 `config.example.json` 跑真实的 `preview` / `check` / `doctor`）。
 
 ---
 

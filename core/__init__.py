@@ -8,6 +8,7 @@ __all__ = [
     "config",
     "curlparse",
     "doctor",
+    "importcurl",
     "log_setup",
     "net",
     "paths",

@@ -35,6 +35,7 @@ from core import (  # noqa: E402
     config as config_mod,
     curlparse,
     doctor,
+    importcurl,
     paths,
     portal,
     runner,
@@ -644,6 +645,82 @@ def test_cli_log_tail():
     expect("第 44 行" not in text, "不该多打印一行")
 
 
+IMPORT_CURL = """curl 'http://10.21.1.1/eportal/InterFace.do?method=login' \\
+  -H 'Content-Type: application/x-www-form-urlencoded; charset=UTF-8' \\
+  -H 'Referer: http://10.21.1.1/eportal/index.jsp?userip=10.20.30.40&token=abc' \\
+  -H 'Cookie: JSESSIONID=deadbeef' \\
+  --data-raw 'userId=20230001&password=Plain!Pass1&service=default&token=abc'"""
+
+IMPORT_CURL_JSON = """curl 'http://10.21.1.1/api/login' \\
+  -H 'Content-Type: application/json' \\
+  --data-raw '{"stuNo":"20230001","pwd":"Plain!Pass1","nas":"AC"}'"""
+
+
+def test_import_curl_placeholders():
+    report = importcurl.from_text(IMPORT_CURL)
+    fields = report.cfg["login"]["fields"]
+    expect(fields.get("userId") == "{username}", f"账号字段应换成占位符：{fields}")
+    expect(fields.get("password") == "{password}", f"密码字段应换成占位符：{fields}")
+    expect(fields.get("service") == "default", f"其它字段应原样保留：{fields}")
+    blob = json.dumps(report.cfg, ensure_ascii=False)
+    expect("Plain!Pass1" not in blob, "配置里不能出现明文密码")
+    expect("20230001" not in blob, "配置里不能出现明文账号")
+    expect(report.username == "20230001" and report.password == "Plain!Pass1", "凭据应被单独取出")
+    expect(report.cfg["preflight"]["url"].startswith("http://10.21.1.1/"), "应从 Referer 推出登录前跳转")
+    expect("Cookie" not in report.cfg["login"]["headers"], "Cookie 不该写进配置（会话由预跳转重建）")
+    expect("***" in report.masked() and "Plain" not in report.masked(), "摘要里密码必须打码")
+
+
+def test_import_curl_json_body():
+    report = importcurl.from_text(IMPORT_CURL_JSON)
+    expect(report.cfg["login"]["content_type"] == "json", f"应识别成 JSON：{report.cfg['login']['content_type']}")
+    fields = report.cfg["login"]["fields"]
+    expect(fields.get("stuNo") == "{username}", f"JSON 里的账号字段也应换掉：{fields}")
+    expect(fields.get("pwd") == "{password}", f"JSON 里的密码字段也应换掉：{fields}")
+    expect(report.password == "Plain!Pass1", "凭据应被取出")
+
+
+def test_import_curl_hash_password():
+    text = IMPORT_CURL.replace("Plain!Pass1", "e10adc3949ba59abbe56e057f20f883e")
+    report = importcurl.from_text(text)
+    expect(report.password_is_hash, "32 位 hex 应识别成 md5 并原样保存")
+    expect(any("md5" in note for note in report.notes), f"应提示是哈希值：{report.notes}")
+
+
+def test_import_curl_rejects_garbage():
+    for bad in ("", "随便一段话", "https://example.com/only-url-not-cur l"):
+        try:
+            importcurl.from_text(bad)
+        except curlparse.CurlParseError:
+            continue
+        if bad.startswith("https://example"):
+            continue  # 只粘网址是允许的
+        raise AssertionError(f"这段不该被当成登录请求：{bad!r}")
+
+
+def test_import_curl_cli_preview():
+    """CLI 的 import-curl 在预览模式下不能落盘，也不能打印密码。"""
+    import login as cli
+
+    with tmpdir() as tmp:
+        path = os.path.join(tmp, "curl.txt")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(IMPORT_CURL)
+        out = io.StringIO()
+
+        class Args:
+            file = path
+            save = False
+            config = os.path.join(tmp, "config.json")
+
+        with contextlib.redirect_stdout(out):
+            code = cli.cmd_import_curl(Args())
+        expect(code == 0, f"预览应成功：{code}")
+        text = out.getvalue()
+        expect("Plain!Pass1" not in text, f"输出里不能出现明文密码：{text[-200:]}")
+        expect(not os.path.exists(Args.config), "预览模式不该写配置")
+
+
 def test_runner_skips_when_online():
     with MockPortal() as srv:
         cfg = make_cfg(srv.base_url)
@@ -802,6 +879,11 @@ def main() -> int:
         ("重试：指数退避与上限", test_retry_backoff),
         ("失败提示：密码错给人话", test_wrong_password_has_hint),
         ("CLI：log 看日志尾部", test_cli_log_tail),
+        ("导入：cURL 自动分离账号密码", test_import_curl_placeholders),
+        ("导入：JSON 请求体", test_import_curl_json_body),
+        ("导入：哈希密码原样保存", test_import_curl_hash_password),
+        ("导入：垃圾输入要拒绝", test_import_curl_rejects_garbage),
+        ("导入：CLI 预览不落盘不打码", test_import_curl_cli_preview),
         ("流程：已联网时跳过", test_runner_skips_when_online),
         ("流程：强制登录", test_runner_login_with_force),
         ("CLI：login 退出码", test_cli_end_to_end),

@@ -37,7 +37,9 @@ from core import (  # noqa: E402
     __version__,
     autostart,
     config as config_mod,
+    curlparse,
     doctor,
+    importcurl,
     log_setup,
     net,
     paths,
@@ -227,6 +229,55 @@ def cmd_log(args) -> int:
     return 0
 
 
+def cmd_import_curl(args) -> int:
+    """把剪贴板里的一条 cURL 直接变成配置 + 加密凭据。"""
+    if args.file:
+        try:
+            with open(args.file, "r", encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError as exc:
+            print(f"读文件失败：{exc}")
+            return 2
+    else:
+        try:
+            text = importcurl.read_clipboard()
+        except RuntimeError as exc:
+            print(f"{exc}")
+            return 2
+
+    try:
+        report = importcurl.from_text(text)
+    except curlparse.CurlParseError as exc:
+        print(f"✗ 解析失败：{exc}")
+        return 2
+
+    print("=== 从这条请求里读出来的 ===")
+    print(f"地址：{report.cfg['login']['method']} {report.cfg['login']['url']}")
+    print(f"格式：{report.cfg['login']['content_type']}")
+    if report.cfg["preflight"].get("url"):
+        print(f"登录前跳转：{report.cfg['preflight']['url']}")
+    print(f"字段：{', '.join(report.cfg['login']['fields']) or '（无，用原始文本）'}")
+    print(report.masked())
+    for note in report.notes:
+        print(f"· {note}")
+    for warning in report.warnings:
+        print(f"⚠ {warning}")
+
+    if not args.save:
+        print("\n（预览模式，什么都没写。确认无误后加 --save 落盘）")
+        return 0
+
+    try:
+        cfg_path, cred_path = importcurl.apply(report, args.config)
+    except (config_mod.ConfigError, secrets.SecretError) as exc:
+        print(f"✗ 保存失败：{exc}")
+        return 2
+    print(f"\n✓ 配置已写入：{paths.show(cfg_path)}")
+    print(f"✓ 账号密码已加密保存：{paths.show(cred_path) if cred_path else '（没认出账号密码，未保存）'}")
+    print("下一步：python login.py login --force 试一次")
+    return 0
+
+
 def cmd_doctor(args) -> int:
     print("=== 自检 ===")
     checks = doctor.run(args.config, probe=not args.no_network)
@@ -267,6 +318,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_log = sub.add_parser("log", help="看最近的日志（出问题时用）")
     p_log.add_argument("-n", "--lines", type=int, default=40, help="显示最后多少行（默认 40）")
     p_log.set_defaults(func=cmd_log, lines=40)
+
+    p_import = sub.add_parser("import-curl", help="从剪贴板里的 cURL 自动生成配置和加密凭据")
+    p_import.add_argument("--file", help="从文件读，而不是剪贴板")
+    p_import.add_argument("--save", action="store_true", help="真的写入 config.json 和凭据文件")
+    p_import.set_defaults(func=cmd_import_curl)
 
     p_auto = sub.add_parser("autostart", help="开机自动登录开关")
     p_auto.add_argument("action", choices=["on", "off", "status"])

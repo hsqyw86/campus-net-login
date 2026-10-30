@@ -219,6 +219,8 @@ def _split_headers(raw_headers: list[str]) -> dict:
 def parse_curl(text: str) -> CurlRequest:
     if not text or not text.strip():
         raise CurlParseError("粘贴内容为空。")
+    # 记事本 / PowerShell 存的文件常带 BOM，粘进来会让「以 curl 开头」的判断失手
+    text = text.lstrip("\ufeff\u200b")
     cleaned = _preprocess(text)
     if not cleaned.lower().lstrip().startswith(("curl", "curl.exe")):
         # 允许用户只粘 URL

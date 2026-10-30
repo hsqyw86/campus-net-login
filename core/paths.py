@@ -42,6 +42,19 @@ def rel(path: str) -> str:
         return path
 
 
+def show(path: str) -> str:
+    """给人看的路径：在程序目录里就显示相对路径，在外面的（如临时文件）就原样显示。"""
+    if not path:
+        return ""
+    full = os.path.abspath(path)
+    root = os.path.abspath(ROOT)
+    try:
+        inside = os.path.commonpath([full, root]) == root
+    except ValueError:  # 不同盘符
+        inside = False
+    return rel(full) if inside else full
+
+
 def write_json_atomic(path: str, data, *, indent: int = 2) -> str:
     """先写临时文件再替换，避免写到一半断电/崩溃留下半个 JSON。
 
