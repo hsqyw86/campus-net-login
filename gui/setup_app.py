@@ -34,22 +34,58 @@ from core import (  # noqa: E402
     portal,
     secrets,
 )
+from core import __version__ as APP_VERSION  # noqa: E402
 
 APP_TITLE = "校园网一键登录 · 设置向导"
-FONT = ("Microsoft YaHei UI", 9)
-FONT_BOLD = ("Microsoft YaHei UI", 9, "bold")
-FONT_TITLE = ("Microsoft YaHei UI", 13, "bold")
+FONT_FAMILY = "Microsoft YaHei UI"
+FONT = (FONT_FAMILY, 9)
+FONT_SMALL = (FONT_FAMILY, 8)
+FONT_BOLD = (FONT_FAMILY, 9, "bold")
+FONT_SECTION = (FONT_FAMILY, 10, "bold")
+FONT_TITLE = (FONT_FAMILY, 16, "bold")
+FONT_SUB = (FONT_FAMILY, 9)
 FONT_MONO = ("Consolas", 9)
+FONT_PILL = (FONT_FAMILY, 8, "bold")
+
+# 颜色写死，不跟系统主题走：vista / 经典 / 高对比度主题下，界面都长同一个样子。
+COLOR = {
+    "bg": "#f1f3f6",
+    "card": "#ffffff",
+    "border": "#d5dce6",
+    "text": "#1f2933",
+    "muted": "#6b7280",
+    "accent": "#2563eb",
+    "accent_dark": "#1d4ed8",
+    "ok": "#0f7b4f",
+    "warn": "#b45309",
+    "err": "#b91c1c",
+    "header": "#132239",
+    "header_muted": "#9fb3c8",
+    "bar": "#e7ebf2",
+}
+STATUS_BG = {
+    "idle": "#475569",
+    "run": COLOR["accent"],
+    "ok": COLOR["ok"],
+    "warn": COLOR["warn"],
+    "err": COLOR["err"],
+}
+SHORTCUT_HINT = "快捷键：Ctrl+Enter 测试登录 · Ctrl+S 保存 · F5 检查网络"
 
 NO_FIELD = "（不使用）"
 _PLACEHOLDER_RE = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}")
 
 
 def _enable_dpi() -> None:
+    """让 Windows 别把界面按 96dpi 画完再拉伸（否则字号会糊）。"""
     try:
         import ctypes
 
-        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        # 2 = 每显示器 DPI 感知（多屏、缩放 150% 时不糊），老系统不支持就退回 1
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except Exception:
         pass
 
@@ -67,7 +103,7 @@ class SetupApp:
         # 按屏幕大小自适应，1366x768 的小本也能完整显示
         screen_w, screen_h = root.winfo_screenwidth(), root.winfo_screenheight()
         win_w = min(940, max(800, screen_w - 240))
-        win_h = min(880, max(620, screen_h - 140))
+        win_h = min(940, max(620, screen_h - 120))
         root.geometry(f"{win_w}x{win_h}+{max(0, (screen_w - win_w) // 2)}+{max(0, (screen_h - win_h) // 3)}")
         root.minsize(800, 600)
         self._build_style()
@@ -97,227 +133,615 @@ class SetupApp:
     # ------------------------------------------------------------ 界面搭建
 
     def _build_style(self) -> None:
+        """换成 clam 主题再自己配色。
+
+        系统主题（vista / xpnative）在不同 Windows 版本上长得不一样，颜色也大多不让改；
+        clam 朴素但完全可配，至少每个人打开看到的是同一张脸。
+        """
+        self.root.configure(bg=COLOR["bg"])
         style = ttk.Style()
         try:
-            style.theme_use("vista")
-        except tk.TclError:
+            style.theme_use("clam")
+        except tk.TclError:  # pragma: no cover
             pass
-        style.configure(".", font=FONT)
-        style.configure("Title.TLabel", font=FONT_TITLE)
-        style.configure("Hint.TLabel", foreground="#6b7280", font=("Microsoft YaHei UI", 8))
-        style.configure("Ok.TLabel", foreground="#047857", font=FONT_BOLD)
-        style.configure("Err.TLabel", foreground="#b91c1c", font=FONT_BOLD)
-        style.configure("Run.TLabel", foreground="#1d4ed8", font=FONT_BOLD)
-        self.root.option_add("*Font", FONT)
+
+        style.configure(".", font=FONT, background=COLOR["bg"], foreground=COLOR["text"])
+        style.configure("TFrame", background=COLOR["bg"])
+        style.configure("Card.TFrame", background=COLOR["card"])
+        style.configure("TLabel", background=COLOR["bg"], foreground=COLOR["text"])
+        style.configure("Card.TLabel", background=COLOR["card"], foreground=COLOR["text"])
+        style.configure("Hint.TLabel", background=COLOR["bg"], foreground=COLOR["muted"], font=FONT_SMALL)
+        style.configure("CardHint.TLabel", background=COLOR["card"], foreground=COLOR["muted"], font=FONT_SMALL)
+
+        style.configure(
+            "Card.TLabelframe",
+            background=COLOR["card"],
+            bordercolor=COLOR["border"],
+            lightcolor=COLOR["border"],
+            darkcolor=COLOR["border"],
+            relief="solid",
+            borderwidth=1,
+        )
+        style.configure(
+            "Card.TLabelframe.Label",
+            background=COLOR["card"],
+            foreground=COLOR["text"],
+            font=FONT_SECTION,
+        )
+
+        style.configure(
+            "TEntry",
+            fieldbackground=COLOR["card"],
+            bordercolor=COLOR["border"],
+            lightcolor=COLOR["border"],
+            darkcolor=COLOR["border"],
+            insertcolor=COLOR["text"],
+            padding=(6, 3),
+        )
+        style.map(
+            "TEntry",
+            bordercolor=[("focus", COLOR["accent"])],
+            lightcolor=[("focus", COLOR["accent"])],
+            darkcolor=[("focus", COLOR["accent"])],
+        )
+        style.configure(
+            "TCombobox",
+            fieldbackground=COLOR["card"],
+            background=COLOR["card"],
+            bordercolor=COLOR["border"],
+            lightcolor=COLOR["border"],
+            darkcolor=COLOR["border"],
+            arrowcolor=COLOR["text"],
+            padding=(4, 2),
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", COLOR["card"])],
+            bordercolor=[("focus", COLOR["accent"])],
+            lightcolor=[("focus", COLOR["accent"])],
+            darkcolor=[("focus", COLOR["accent"])],
+        )
+
+        # 按钮分三级：普通（浅灰）、Primary（蓝，主操作）、Save（绿，收尾动作）、Mini（卡片里的小按钮）
+        style.configure(
+            "TButton",
+            background="#e8ecf2",
+            foreground=COLOR["text"],
+            bordercolor=COLOR["border"],
+            lightcolor=COLOR["border"],
+            darkcolor=COLOR["border"],
+            padding=(12, 5),
+            relief="flat",
+        )
+        style.map(
+            "TButton",
+            background=[("disabled", "#eef1f5"), ("pressed", "#d3dae5"), ("active", "#dde3ec")],
+            foreground=[("disabled", "#9aa3af")],
+        )
+        style.configure(
+            "Primary.TButton",
+            background=COLOR["accent"],
+            foreground="#ffffff",
+            bordercolor=COLOR["accent_dark"],
+            lightcolor=COLOR["accent"],
+            darkcolor=COLOR["accent_dark"],
+            font=FONT_BOLD,
+        )
+        style.map(
+            "Primary.TButton",
+            background=[("disabled", "#9db9f0"), ("pressed", COLOR["accent_dark"]), ("active", COLOR["accent_dark"])],
+            foreground=[("disabled", "#f2f6ff")],
+        )
+        style.configure(
+            "Save.TButton",
+            background=COLOR["ok"],
+            foreground="#ffffff",
+            bordercolor="#0b6240",
+            lightcolor=COLOR["ok"],
+            darkcolor="#0b6240",
+            font=FONT_BOLD,
+        )
+        style.map(
+            "Save.TButton",
+            background=[("disabled", "#8fb8a6"), ("pressed", "#0b6240"), ("active", "#0b6240")],
+            foreground=[("disabled", "#f2f7f4")],
+        )
+        style.configure(
+            "Mini.TButton",
+            background=COLOR["card"],
+            foreground=COLOR["accent_dark"],
+            bordercolor=COLOR["border"],
+            lightcolor=COLOR["border"],
+            darkcolor=COLOR["border"],
+            padding=(8, 2),
+            font=FONT_SMALL,
+        )
+        style.map("Mini.TButton", background=[("active", "#eef2ff"), ("pressed", "#e0e7ff")])
+
+        style.configure("Card.TCheckbutton", background=COLOR["card"], foreground=COLOR["text"])
+        style.map("Card.TCheckbutton", background=[("active", COLOR["card"])])
+        style.configure("TCheckbutton", background=COLOR["bg"], foreground=COLOR["text"])
+        style.map("TCheckbutton", background=[("active", COLOR["bg"])])
+        style.configure("Card.TRadiobutton", background=COLOR["card"], foreground=COLOR["text"])
+        style.map("Card.TRadiobutton", background=[("active", COLOR["card"])])
+
+        style.configure(
+            "Header.Horizontal.TProgressbar",
+            background=COLOR["accent"],
+            troughcolor=COLOR["header"],
+            bordercolor=COLOR["header"],
+            lightcolor=COLOR["accent"],
+            darkcolor=COLOR["accent"],
+            thickness=6,
+        )
+        for orient in ("Vertical", "Horizontal"):
+            style.configure(
+                f"{orient}.TScrollbar",
+                background="#cbd5e1",
+                troughcolor=COLOR["card"],
+                bordercolor=COLOR["card"],
+                arrowcolor="#64748b",
+            )
+
+    # ------------------------------------------------------------ 界面搭建
 
     def _build_ui(self) -> None:
-        outer = ttk.Frame(self.root, padding=(14, 12, 14, 10))
+        self._progress_on = False
+        self._build_header()
+
+        outer = ttk.Frame(self.root, padding=(16, 12, 16, 10))
         outer.pack(fill="both", expand=True)
         outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(0, weight=1)  # 三步表单：可滚动，窗口变高时优先给它
+        outer.rowconfigure(2, weight=0)  # 运行信息：固定高度，别抢表单的地方
 
-        header = ttk.Frame(outer)
-        header.grid(row=0, column=0, sticky="ew")
-        ttk.Label(header, text="校园网一键登录", style="Title.TLabel").pack(side="left")
-        ttk.Label(
-            header,
-            text="  通用 Portal 认证 · 配置一次，以后双击即登录",
-            style="Hint.TLabel",
-        ).pack(side="left", pady=(6, 0))
-        self.status_label = ttk.Label(header, text="", style="Hint.TLabel")
-        self.status_label.pack(side="right", pady=(6, 0))
+        content = self._build_scroll_area(outer, row=0)
+        self._build_step1(content, row=0)
+        self._build_step3(content, row=1)  # 账号密码：填完 cURL 就要用，放在前面
+        self._build_step2(content, row=2)  # 请求细节：多数人不用动，放最后
+        self._build_actions(outer, row=1)
+        self._build_log(outer, row=2)
+        self._build_statusbar()
+        self._bind_shortcuts()
 
-        # ---------- 步骤 1：粘贴请求
-        box1 = ttk.LabelFrame(outer, text=" ① 粘贴登录请求（最简单的方式） ", padding=10)
-        box1.grid(row=1, column=0, sticky="ew", pady=(10, 6))
-        box1.columnconfigure(0, weight=1)
-        ttk.Label(
-            box1,
-            text=(
-                "浏览器里打开校园网登录页 → F12 打开开发者工具 → Network(网络) → 手动登录一次 → "
-                "在列表里找到登录那条请求（一般是 login / InterFace.do / wlanuserip 之类）→ "
-                "右键 → Copy → Copy as cURL，然后粘贴到下面。"
-            ),
-            style="Hint.TLabel",
-            wraplength=860,
-            justify="left",
-        ).grid(row=0, column=0, columnspan=2, sticky="w")
-        self.curl_text = tk.Text(box1, height=5, font=FONT_MONO, wrap="none", undo=True)
-        self.curl_text.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 6))
-        bar1 = ttk.Frame(box1)
-        bar1.grid(row=2, column=0, columnspan=2, sticky="ew")
-        ttk.Button(bar1, text="从剪贴板粘贴", command=self.on_paste_clipboard).pack(side="left")
-        ttk.Button(bar1, text="解析并填入 ↓", command=self.on_parse_curl).pack(side="left", padx=6)
-        ttk.Button(bar1, text="清空", command=lambda: self.curl_text.delete("1.0", "end")).pack(side="left")
-        ttk.Label(
-            bar1,
-            text="也可以完全跳过这一步，直接在下面手动填写。",
-            style="Hint.TLabel",
-        ).pack(side="left", padx=10)
-
-        # ---------- 步骤 2：请求内容
-        box2 = ttk.LabelFrame(outer, text=" ② 请求内容 ", padding=10)
-        box2.grid(row=2, column=0, sticky="ew", pady=6)
-        box2.columnconfigure(1, weight=1)
-
-        row = 0
-        ttk.Label(box2, text="登录地址").grid(row=row, column=0, sticky="w", pady=2)
-        self.url_var = tk.StringVar()
-        ttk.Entry(box2, textvariable=self.url_var, font=FONT_MONO).grid(row=row, column=1, sticky="ew", padx=(8, 8))
-        ttk.Label(box2, text="方法").grid(row=row, column=2, sticky="e")
-        self.method_var = tk.StringVar(value="POST")
-        ttk.Combobox(
-            box2, textvariable=self.method_var, values=["POST", "GET"], width=7, state="readonly"
-        ).grid(row=row, column=3, sticky="w", padx=(4, 0))
-
-        row += 1
-        ttk.Label(box2, text="登录前跳转").grid(row=row, column=0, sticky="w", pady=2)
-        self.preflight_var = tk.StringVar()
-        ttk.Entry(box2, textvariable=self.preflight_var, font=FONT_MONO).grid(
-            row=row, column=1, columnspan=3, sticky="ew", padx=(8, 0)
-        )
-        ttk.Label(
-            box2,
-            text="选填：登录前先访问的地址，用来从跳转里取 userip / token 等参数",
-            style="Hint.TLabel",
-        ).grid(row=row + 1, column=1, columnspan=3, sticky="w", padx=(8, 0))
-
-        row += 2
-        ttk.Label(box2, text="请求体格式").grid(row=row, column=0, sticky="w", pady=(6, 2))
-        self.ctype_var = tk.StringVar(value="form")
-        ctype_frame = ttk.Frame(box2)
-        ctype_frame.grid(row=row, column=1, columnspan=3, sticky="w", padx=(8, 0))
-        for text, value in (("表单 form", "form"), ("JSON", "json"), ("原始文本", "raw")):
-            ttk.Radiobutton(
-                ctype_frame, text=text, value=value, variable=self.ctype_var, command=self._update_body_hint
-            ).pack(side="left", padx=(0, 14))
-
-        row += 1
-        ttk.Label(box2, text="请求体").grid(row=row, column=0, sticky="nw", pady=(6, 2))
-        self.body_text = tk.Text(box2, height=6, font=FONT_MONO, wrap="none", undo=True)
-        self.body_text.grid(row=row, column=1, columnspan=2, sticky="ew", padx=(8, 8))
-        body_scroll = ttk.Scrollbar(box2, orient="vertical", command=self.body_text.yview)
-        body_scroll.grid(row=row, column=3, sticky="ns")
-        self.body_text.configure(yscrollcommand=body_scroll.set)
-        # 手填请求体时下拉框要跟着变，否则「账号字段」里永远只有「（不使用）」
-        self.body_text.bind("<<Modified>>", self._on_body_modified)
-
-        row += 1
-        self.body_hint = ttk.Label(box2, text="", style="Hint.TLabel")
-        self.body_hint.grid(row=row, column=1, columnspan=3, sticky="w", padx=(8, 0), pady=(0, 4))
-
-        row += 1
-        ttk.Label(box2, text="账号字段").grid(row=row, column=0, sticky="w", pady=2)
-        self.user_field_var = tk.StringVar(value=NO_FIELD)
-        self.user_field_box = ttk.Combobox(box2, textvariable=self.user_field_var, values=[NO_FIELD], width=22, state="readonly")
-        self.user_field_box.grid(row=row, column=1, sticky="w", padx=(8, 8))
-        self.user_field_box.bind("<<ComboboxSelected>>", lambda _e: self._apply_field_mapping())
-        ttk.Label(box2, text="密码字段").grid(row=row, column=2, sticky="e")
-        self.pass_field_var = tk.StringVar(value=NO_FIELD)
-        self.pass_field_box = ttk.Combobox(box2, textvariable=self.pass_field_var, values=[NO_FIELD], width=18, state="readonly")
-        self.pass_field_box.grid(row=row, column=3, sticky="w", padx=(4, 0))
-        self.pass_field_box.bind("<<ComboboxSelected>>", lambda _e: self._apply_field_mapping())
-
-        row += 1
-        ttk.Label(box2, text="密码处理").grid(row=row, column=0, sticky="w", pady=(6, 2))
-        self.pw_tpl_var = tk.StringVar(value="{password}")
-        ttk.Combobox(
-            box2,
-            textvariable=self.pw_tpl_var,
-            values=["{password}", "{md5}", "{md5_upper}", "{base64}", "{sha1}"],
-            width=22,
-        ).grid(row=row, column=1, sticky="w", padx=(8, 8))
-        ttk.Label(
-            box2,
-            text="明文提交就用 {password}；如果抓到的密码是 32 位十六进制串，用 {md5}",
-            style="Hint.TLabel",
-        ).grid(row=row, column=2, columnspan=2, sticky="w")
-
-        row += 1
-        ttk.Label(box2, text="成功关键字").grid(row=row, column=0, sticky="w", pady=(6, 2))
-        self.ok_kw_var = tk.StringVar()
-        ttk.Entry(box2, textvariable=self.ok_kw_var, font=FONT_MONO).grid(
-            row=row, column=1, sticky="ew", padx=(8, 8)
-        )
-        row += 1
-        ttk.Label(box2, text="失败关键字").grid(row=row, column=0, sticky="w", pady=2)
-        self.fail_kw_var = tk.StringVar()
-        ttk.Entry(box2, textvariable=self.fail_kw_var, font=FONT_MONO).grid(
-            row=row, column=1, sticky="ew", padx=(8, 8)
-        )
-        row += 1
-        ttk.Label(box2, text="JSON 判定").grid(row=row, column=0, sticky="w", pady=2)
-        json_frame = ttk.Frame(box2)
-        json_frame.grid(row=row, column=1, columnspan=3, sticky="w", padx=(8, 0))
-        self.json_path_var = tk.StringVar()
-        self.json_eq_var = tk.StringVar()
-        ttk.Entry(json_frame, textvariable=self.json_path_var, width=20, font=FONT_MONO).pack(side="left")
-        ttk.Label(json_frame, text=" = ").pack(side="left")
-        ttk.Entry(json_frame, textvariable=self.json_eq_var, width=18, font=FONT_MONO).pack(side="left")
-        ttk.Label(
-            json_frame,
-            text="  选填，例：result = success（比关键字更准）",
-            style="Hint.TLabel",
-        ).pack(side="left")
-
-        # ---------- 步骤 3：账号
-        box3 = ttk.LabelFrame(outer, text=" ③ 账号密码 ", padding=10)
-        box3.grid(row=3, column=0, sticky="ew", pady=6)
-        box3.columnconfigure(1, weight=1)
-        box3.columnconfigure(3, weight=1)
-        ttk.Label(box3, text="账号").grid(row=0, column=0, sticky="w")
-        self.user_var = tk.StringVar()
-        ttk.Entry(box3, textvariable=self.user_var, font=FONT_MONO).grid(row=0, column=1, sticky="ew", padx=(8, 16))
-        ttk.Label(box3, text="密码").grid(row=0, column=2, sticky="w")
-        self.pass_var = tk.StringVar()
-        ttk.Entry(box3, textvariable=self.pass_var, show="●", font=FONT_MONO).grid(
-            row=0, column=3, sticky="ew", padx=(8, 0)
-        )
-        ttk.Label(
-            box3,
-            text="密码用 Windows DPAPI 加密保存在 credentials.dat，只有当前 Windows 账号能解开。",
-            style="Hint.TLabel",
-        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
-
-        # ---------- 操作按钮
-        actions = ttk.Frame(outer)
-        actions.grid(row=4, column=0, sticky="ew", pady=(8, 4))
-        self.test_btn = ttk.Button(actions, text="测试登录", command=self.on_test)
-        self.test_btn.pack(side="left")
-        ttk.Button(actions, text="保存设置", command=self.on_save).pack(side="left", padx=6)
-        ttk.Button(actions, text="创建桌面快捷方式", command=self.on_shortcut).pack(side="left", padx=(0, 6))
-        ttk.Button(actions, text="检查网络", command=self.on_check_network).pack(side="left", padx=(0, 6))
-        ttk.Button(actions, text="自检", command=self.on_doctor).pack(side="left", padx=(0, 6))
-        ttk.Button(actions, text="查看日志", command=self.on_open_log).pack(side="left")
-
-        self.autostart_var = tk.BooleanVar(value=False)
-        self.autostart_check = ttk.Checkbutton(
-            actions, text="开机自动登录", variable=self.autostart_var, command=self.on_toggle_autostart
-        )
-        self.autostart_check.pack(side="right")
-
-        # ---------- 日志
-        box4 = ttk.LabelFrame(outer, text=" 运行信息 ", padding=8)
-        box4.grid(row=5, column=0, sticky="nsew")
-        outer.rowconfigure(5, weight=1)
-        box4.columnconfigure(0, weight=1)
-        box4.rowconfigure(0, weight=1)
-        self.log_text = tk.Text(box4, height=9, font=FONT_MONO, wrap="word", state="disabled", bg="#f8fafc")
-        self.log_text.grid(row=0, column=0, sticky="nsew")
-        scroll = ttk.Scrollbar(box4, orient="vertical", command=self.log_text.yview)
-        scroll.grid(row=0, column=1, sticky="ns")
-        self.log_text.configure(yscrollcommand=scroll.set)
-        for tag, color in (("ok", "#047857"), ("err", "#b91c1c"), ("info", "#334155"), ("warn", "#b45309")):
-            self.log_text.tag_configure(tag, foreground=color)
-
-        self._update_body_hint()
         warning = getattr(self, "_pending_warning", "")
         if warning:
             self.log(f"提示：{warning}", "warn")
             self.log("下面这些是默认值，请先粘贴登录请求或手动填写。", "warn")
+            self._set_status("需要配置", "warn")
         else:
             self.log("已读取现有配置，可以直接测试登录。", "info")
         if self.old_creds.complete:
-            self.status_label.configure(text=f"已保存账号：{self.old_creds.username}", style="Hint.TLabel")
+            self._set_status(f"账号 {secrets.mask_username(self.old_creds.username)}", "idle")
+
+    def _build_scroll_area(self, parent, row: int) -> ttk.Frame:
+        """把三步表单放进可滚动的画布。
+
+        1366x768 的本子上，按原来的排法进度条和日志区会被挤没；
+        滚动之后窗口小不小都不影响，滚一下就能看到全部内容。
+        """
+        holder = ttk.Frame(parent)
+        holder.grid(row=row, column=0, sticky="nsew", pady=(0, 4))
+        holder.rowconfigure(0, weight=1)
+        holder.columnconfigure(0, weight=1)
+
+        self._canvas = tk.Canvas(holder, bg=COLOR["bg"], highlightthickness=0, borderwidth=0)
+        self._canvas.grid(row=0, column=0, sticky="nsew")
+        bar = ttk.Scrollbar(holder, orient="vertical", command=self._canvas.yview)
+        bar.grid(row=0, column=1, sticky="ns")
+
+        content = ttk.Frame(self._canvas)
+        content.columnconfigure(0, weight=1)
+        window = self._canvas.create_window((0, 0), window=content, anchor="nw")
+
+        # 「下面还有内容」的角标：用 place 浮在上面，不占布局，也就不会自己把自己顶出来
+        self._scroll_hint = tk.Label(
+            holder,
+            text=" 下面还有内容 ",
+            font=FONT_SMALL,
+            bg=COLOR["card"],
+            fg=COLOR["muted"],
+            highlightbackground=COLOR["border"],
+            highlightthickness=1,
+            padx=6,
+            pady=1,
+        )
+
+        def on_scroll(first, last) -> None:
+            bar.set(first, last)
+            self._update_scroll_hint(float(first), float(last), content)
+
+        self._canvas.configure(yscrollcommand=on_scroll)
+
+        def sync(_event=None) -> None:
+            self._canvas.itemconfigure(window, width=self._canvas.winfo_width())
+            self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+            tall = content.winfo_reqheight() > self._canvas.winfo_height() + 2
+            if tall:
+                bar.grid()
+            else:
+                bar.grid_remove()
+            self._update_scroll_hint(*self._canvas.yview(), content)
+
+        content.bind("<Configure>", sync)
+        self._canvas.bind("<Configure>", sync)
+        # 只有指针在表单上时才接管滚轮，鼠标停在日志框里滚的还是日志
+        self._canvas.bind("<Enter>", lambda _e: self._canvas.bind_all("<MouseWheel>", self._on_wheel))
+        self._canvas.bind("<Leave>", lambda _e: self._canvas.unbind_all("<MouseWheel>"))
+        return content
+
+    def _update_scroll_hint(self, first: float, last: float, content) -> None:
+        hint = getattr(self, "_scroll_hint", None)
+        if hint is None:
+            return
+        more = content.winfo_reqheight() > self._canvas.winfo_height() + 2 and last < 0.999
+        if more:
+            hint.place(relx=1.0, rely=1.0, x=-22, y=-10, anchor="se")
+        else:
+            hint.place_forget()
+
+    def _on_wheel(self, event) -> None:
+        delta = -1 if getattr(event, "delta", 0) > 0 else 1
+        self._canvas.yview_scroll(delta * 2, "units")
+
+    def _build_header(self) -> None:
+        header = tk.Frame(self.root, bg=COLOR["header"])
+        header.pack(side="top", fill="x")
+        inner = tk.Frame(header, bg=COLOR["header"])
+        inner.pack(fill="x", padx=16, pady=(12, 11))
+        tk.Label(
+            inner, text="校园网一键登录", font=FONT_TITLE, bg=COLOR["header"], fg="#ffffff"
+        ).pack(side="left")
+        tk.Label(
+            inner,
+            text="通用 Portal 认证 · 配置一次，以后双击就登录",
+            font=FONT_SUB,
+            bg=COLOR["header"],
+            fg=COLOR["header_muted"],
+        ).pack(side="left", padx=(12, 0), pady=(10, 0))
+        self.status_label = tk.Label(
+            inner, text="准备就绪", font=FONT_PILL, bg=STATUS_BG["idle"], fg="#ffffff", padx=10, pady=3
+        )
+        self.status_label.pack(side="right")
+        self.progress = ttk.Progressbar(inner, mode="indeterminate", length=88, style="Header.Horizontal.TProgressbar")
+
+    def _card(self, parent, title: str, row: int, pady=(0, 8)) -> ttk.LabelFrame:
+        card = ttk.LabelFrame(parent, text=title, style="Card.TLabelframe", padding=(12, 8, 12, 12))
+        card.grid(row=row, column=0, sticky="ew", pady=pady)
+        return card
+
+    def _text_area(self, parent, height: int, wrap: str = "none") -> tuple[tk.Frame, tk.Text]:
+        """带 1px 边框和双向滚动条的文本区。
+
+        直接给 tk.Text 套一层底框当边框：highlightthickness 在聚焦时会叠色，
+        而且横向滚动条以前根本没有，长 URL 只能靠键盘挪。
+        """
+        shell = tk.Frame(parent, bg=COLOR["border"])
+        text = tk.Text(
+            shell,
+            height=height,
+            font=FONT_MONO,
+            wrap=wrap,
+            undo=True,
+            relief="flat",
+            borderwidth=0,
+            bg=COLOR["card"],
+            fg=COLOR["text"],
+            insertbackground=COLOR["text"],
+            padx=8,
+            pady=6,
+            selectbackground="#c7ddff",
+            selectforeground=COLOR["text"],
+        )
+        text.grid(row=0, column=0, sticky="nsew", padx=(1, 0), pady=(1, 0))
+        vbar = ttk.Scrollbar(shell, orient="vertical", command=text.yview)
+        vbar.grid(row=0, column=1, sticky="ns", padx=(0, 1), pady=(1, 0))
+        hbar = ttk.Scrollbar(shell, orient="horizontal", command=text.xview)
+        hbar.grid(row=1, column=0, sticky="ew", padx=(1, 0), pady=(0, 1))
+        text.configure(yscrollcommand=vbar.set, xscrollcommand=hbar.set)
+        shell.rowconfigure(0, weight=1)
+        shell.columnconfigure(0, weight=1)
+        return shell, text
+
+    def _build_step1(self, parent, row: int) -> None:
+        card = self._card(parent, "① 粘贴登录请求（最快）", row)
+        card.columnconfigure(0, weight=1)
+        ttk.Label(
+            card,
+            text=(
+                "浏览器打开校园网登录页 → F12 → Network(网络) → 手动登录一次 → "
+                "在列表里找到登录那条请求（一般叫 login / InterFace.do / wlanuserip 之类）→ "
+                "右键 → Copy → Copy as cURL，然后粘到下面。"
+            ),
+            style="CardHint.TLabel",
+            wraplength=820,
+            justify="left",
+        ).grid(row=0, column=0, sticky="w")
+
+        shell, self.curl_text = self._text_area(card, height=4)
+        shell.grid(row=1, column=0, sticky="ew", pady=(8, 8))
+
+        bar = ttk.Frame(card, style="Card.TFrame")
+        bar.grid(row=2, column=0, sticky="ew")
+        ttk.Button(bar, text="粘贴并解析", style="Primary.TButton", command=self.on_paste_clipboard).pack(side="left")
+        ttk.Button(bar, text="重新解析", command=self.on_parse_curl).pack(side="left", padx=(8, 0))
+        ttk.Button(bar, text="清空", command=lambda: self.curl_text.delete("1.0", "end")).pack(side="left", padx=(8, 0))
+        ttk.Label(
+            bar, text="也可以完全跳过这一步，直接在下面手填。", style="CardHint.TLabel"
+        ).pack(side="left", padx=12)
+
+    def _build_step2(self, parent, row: int) -> None:
+        card = self._card(parent, "③ 请求内容（一般不用改，粘贴 cURL 时自动填好）", row)
+        card.columnconfigure(1, weight=1)
+        card.columnconfigure(3, weight=1)
+
+        row = 0
+        ttk.Label(card, text="登录地址", style="Card.TLabel").grid(row=row, column=0, sticky="w", pady=2)
+        self.url_var = tk.StringVar()
+        ttk.Entry(card, textvariable=self.url_var, font=FONT_MONO).grid(row=row, column=1, columnspan=2, sticky="ew", padx=(8, 8))
+        method_frame = ttk.Frame(card, style="Card.TFrame")
+        method_frame.grid(row=row, column=3, sticky="e")
+        ttk.Label(method_frame, text="方法", style="Card.TLabel").pack(side="left", padx=(0, 4))
+        self.method_var = tk.StringVar(value="POST")
+        ttk.Combobox(
+            method_frame, textvariable=self.method_var, values=["POST", "GET"], width=7, state="readonly"
+        ).pack(side="left")
+
+        row += 1
+        ttk.Label(card, text="登录前跳转", style="Card.TLabel").grid(row=row, column=0, sticky="w", pady=(4, 2))
+        self.preflight_var = tk.StringVar()
+        ttk.Entry(card, textvariable=self.preflight_var, font=FONT_MONO).grid(
+            row=row, column=1, columnspan=3, sticky="ew", padx=(8, 0), pady=(4, 0)
+        )
+        ttk.Label(
+            card,
+            text="选填：登录前先访问的地址，用来从跳转里取 userip / token 等参数",
+            style="CardHint.TLabel",
+        ).grid(row=row + 1, column=1, columnspan=3, sticky="w", padx=(8, 0))
+
+        row += 2
+        ttk.Label(card, text="请求体格式", style="Card.TLabel").grid(row=row, column=0, sticky="w", pady=(6, 2))
+        ctype_frame = ttk.Frame(card, style="Card.TFrame")
+        ctype_frame.grid(row=row, column=1, columnspan=3, sticky="w", padx=(8, 0))
+        self.ctype_var = tk.StringVar(value="form")
+        for text, value in (("表单 form", "form"), ("JSON", "json"), ("原始文本", "raw")):
+            ttk.Radiobutton(
+                ctype_frame,
+                text=text,
+                value=value,
+                variable=self.ctype_var,
+                style="Card.TRadiobutton",
+                command=self._update_body_hint,
+            ).pack(side="left", padx=(0, 14))
+
+        row += 1
+        ttk.Label(card, text="请求体", style="Card.TLabel").grid(row=row, column=0, sticky="nw", pady=(6, 2))
+        body_shell, self.body_text = self._text_area(card, height=4)
+        body_shell.grid(row=row, column=1, columnspan=3, sticky="ew", padx=(8, 0), pady=(6, 0))
+        # 手填请求体时下拉框要跟着变，否则「账号字段」里永远只有「（不使用）」
+        self.body_text.bind("<<Modified>>", self._on_body_modified)
+
+        row += 1
+        self.body_hint = ttk.Label(card, text="", style="CardHint.TLabel")
+        self.body_hint.grid(row=row, column=1, columnspan=3, sticky="w", padx=(8, 0), pady=(4, 4))
+
+        row += 1
+        ttk.Label(card, text="账号字段", style="Card.TLabel").grid(row=row, column=0, sticky="w", pady=2)
+        self.user_field_var = tk.StringVar(value=NO_FIELD)
+        self.user_field_box = ttk.Combobox(
+            card, textvariable=self.user_field_var, values=[NO_FIELD], width=20, state="readonly"
+        )
+        self.user_field_box.grid(row=row, column=1, sticky="w", padx=(8, 8))
+        self.user_field_box.bind("<<ComboboxSelected>>", lambda _e: self._apply_field_mapping())
+        ttk.Label(card, text="密码字段", style="Card.TLabel").grid(row=row, column=2, sticky="e")
+        self.pass_field_var = tk.StringVar(value=NO_FIELD)
+        self.pass_field_box = ttk.Combobox(
+            card, textvariable=self.pass_field_var, values=[NO_FIELD], width=18, state="readonly"
+        )
+        self.pass_field_box.grid(row=row, column=3, sticky="w", padx=(4, 0))
+        self.pass_field_box.bind("<<ComboboxSelected>>", lambda _e: self._apply_field_mapping())
+
+        row += 1
+        ttk.Label(card, text="密码处理", style="Card.TLabel").grid(row=row, column=0, sticky="w", pady=(6, 2))
+        self.pw_tpl_var = tk.StringVar(value="{password}")
+        ttk.Combobox(
+            card,
+            textvariable=self.pw_tpl_var,
+            values=["{password}", "{md5}", "{md5_upper}", "{base64}", "{sha1}"],
+            width=20,
+        ).grid(row=row, column=1, sticky="w", padx=(8, 8), pady=(6, 0))
+        ttk.Label(
+            card,
+            text="明文提交用 {password}；抓到的若是 32 位十六进制串，用 {md5}",
+            style="CardHint.TLabel",
+        ).grid(row=row, column=2, columnspan=2, sticky="w", pady=(6, 0))
+
+        row += 1
+        ttk.Label(card, text="成功关键字", style="Card.TLabel").grid(row=row, column=0, sticky="w", pady=(6, 2))
+        self.ok_kw_var = tk.StringVar()
+        ttk.Entry(card, textvariable=self.ok_kw_var, font=FONT_MONO).grid(
+            row=row, column=1, columnspan=3, sticky="ew", padx=(8, 0), pady=(6, 0)
+        )
+        row += 1
+        ttk.Label(card, text="失败关键字", style="Card.TLabel").grid(row=row, column=0, sticky="w", pady=2)
+        self.fail_kw_var = tk.StringVar()
+        ttk.Entry(card, textvariable=self.fail_kw_var, font=FONT_MONO).grid(
+            row=row, column=1, columnspan=3, sticky="ew", padx=(8, 0)
+        )
+        row += 1
+        ttk.Label(card, text="JSON 判定", style="Card.TLabel").grid(row=row, column=0, sticky="w", pady=2)
+        json_frame = ttk.Frame(card, style="Card.TFrame")
+        json_frame.grid(row=row, column=1, columnspan=3, sticky="w", padx=(8, 0))
+        self.json_path_var = tk.StringVar()
+        self.json_eq_var = tk.StringVar()
+        ttk.Entry(json_frame, textvariable=self.json_path_var, width=18, font=FONT_MONO).pack(side="left")
+        ttk.Label(json_frame, text=" = ", style="Card.TLabel").pack(side="left")
+        ttk.Entry(json_frame, textvariable=self.json_eq_var, width=16, font=FONT_MONO).pack(side="left")
+        ttk.Label(
+            json_frame, text="  选填，例：result = success（比关键字更准）", style="CardHint.TLabel"
+        ).pack(side="left")
+
+    def _build_step3(self, parent, row: int) -> None:
+        card = self._card(parent, "② 账号密码（加密存在本机）", row)
+        card.columnconfigure(1, weight=1)
+        card.columnconfigure(3, weight=1)
+        ttk.Label(card, text="账号", style="Card.TLabel").grid(row=0, column=0, sticky="w")
+        self.user_var = tk.StringVar()
+        self.user_entry = ttk.Entry(card, textvariable=self.user_var, font=FONT_MONO)
+        self.user_entry.grid(row=0, column=1, sticky="ew", padx=(8, 16))
+
+        ttk.Label(card, text="密码", style="Card.TLabel").grid(row=0, column=2, sticky="w")
+        self.pass_var = tk.StringVar()
+        self.pass_entry = ttk.Entry(card, textvariable=self.pass_var, show="●", font=FONT_MONO)
+        self.pass_entry.grid(row=0, column=3, sticky="ew", padx=(8, 0))
+
+        self.show_pass_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            card,
+            text="显示",
+            variable=self.show_pass_var,
+            style="Card.TCheckbutton",
+            command=self._toggle_password,
+        ).grid(row=0, column=4, sticky="w", padx=(8, 0))
+
+        self.cred_hint = ttk.Label(
+            card,
+            text="密码用 Windows DPAPI 加密保存在 credentials.dat，只有当前 Windows 账号能解开；"
+            "配置里只会有 {username} / {password} 占位符。",
+            style="CardHint.TLabel",
+            wraplength=820,
+            justify="left",
+        )
+        self.cred_hint.grid(row=1, column=0, columnspan=5, sticky="w", pady=(8, 0))
+
+    def _build_actions(self, parent, row: int) -> None:
+        box = ttk.Frame(parent)
+        box.grid(row=row, column=0, sticky="ew", pady=(4, 6))
+        box.columnconfigure(0, weight=1)
+
+        left = ttk.Frame(box)
+        left.grid(row=0, column=0, sticky="w")
+        self.test_btn = ttk.Button(left, text="测试登录", style="Primary.TButton", command=self.on_test)
+        self.test_btn.pack(side="left")
+        self.save_btn = ttk.Button(left, text="保存设置", style="Save.TButton", command=self.on_save)
+        self.save_btn.pack(side="left", padx=(8, 0))
+        for text, cmd in (
+            ("创建桌面快捷方式", self.on_shortcut),
+            ("检查网络", self.on_check_network),
+            ("自检", self.on_doctor),
+        ):
+            ttk.Button(left, text=text, command=cmd).pack(side="left", padx=(8, 0))
+
+        right = ttk.Frame(box)
+        right.grid(row=0, column=1, sticky="e")
+        self.autostart_var = tk.BooleanVar(value=False)
+        self.autostart_check = ttk.Checkbutton(
+            right, text="开机自动登录", variable=self.autostart_var, command=self.on_toggle_autostart
+        )
+        self.autostart_check.pack(side="right")
+
+        ttk.Label(box, text=SHORTCUT_HINT, style="Hint.TLabel").grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=(6, 0)
+        )
+
+    def _build_log(self, parent, row: int) -> None:
+        card = self._card(parent, "运行信息", row, pady=(4, 0))
+        card.columnconfigure(0, weight=1)
+        card.rowconfigure(1, weight=1)
+
+        tools = ttk.Frame(card, style="Card.TFrame")
+        tools.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        ttk.Label(
+            tools, text="出问题时把这里的内容整段贴给我，一眼就能看出卡在哪一步。", style="CardHint.TLabel"
+        ).pack(side="left")
+        ttk.Button(tools, text="复制全部", style="Mini.TButton", command=self.on_copy_log).pack(side="right")
+        ttk.Button(tools, text="清空", style="Mini.TButton", command=self.on_clear_log).pack(side="right", padx=(0, 6))
+        ttk.Button(tools, text="打开日志文件", style="Mini.TButton", command=self.on_open_log).pack(
+            side="right", padx=(0, 6)
+        )
+
+        log_shell = tk.Frame(card, bg=COLOR["border"])
+        log_shell.grid(row=1, column=0, sticky="nsew")
+        self.log_text = tk.Text(
+            log_shell,
+            height=7,
+            font=FONT_MONO,
+            wrap="word",
+            state="disabled",
+            relief="flat",
+            borderwidth=0,
+            bg="#fbfcfe",
+            fg=COLOR["text"],
+            padx=8,
+            pady=6,
+        )
+        self.log_text.grid(row=0, column=0, sticky="nsew", padx=(1, 0), pady=(1, 1))
+        scroll = ttk.Scrollbar(log_shell, orient="vertical", command=self.log_text.yview)
+        scroll.grid(row=0, column=1, sticky="ns", padx=(0, 1), pady=(1, 1))
+        self.log_text.configure(yscrollcommand=scroll.set)
+        log_shell.rowconfigure(0, weight=1)
+        log_shell.columnconfigure(0, weight=1)
+        for tag, color in (("ok", COLOR["ok"]), ("err", COLOR["err"]), ("info", "#334155"), ("warn", COLOR["warn"])):
+            self.log_text.tag_configure(tag, foreground=color)
+
+    def _build_statusbar(self) -> None:
+        bar = tk.Frame(self.root, bg=COLOR["bar"])
+        bar.pack(side="bottom", fill="x")
+        tk.Frame(bar, bg=COLOR["border"], height=2).pack(side="top", fill="x")
+        inner = tk.Frame(bar, bg=COLOR["bar"])
+        inner.pack(fill="x", padx=16, pady=5)
+        self.footer_left = tk.Label(
+            inner,
+            text=f"配置文件：{paths.rel(paths.CONFIG_FILE)}",
+            font=FONT_SMALL,
+            bg=COLOR["bar"],
+            fg=COLOR["muted"],
+        )
+        self.footer_left.pack(side="left")
+        self.footer_right = tk.Label(
+            inner,
+            text=f"双击「一键登录.vbs」即可登录 · v{APP_VERSION}",
+            font=FONT_SMALL,
+            bg=COLOR["bar"],
+            fg=COLOR["muted"],
+        )
+        self.footer_right.pack(side="right")
+
+    def _bind_shortcuts(self) -> None:
+        self.root.bind("<Control-Return>", self._shortcut(self.on_test))
+        self.root.bind("<Control-s>", self._shortcut(self.on_save))
+        self.root.bind("<F5>", self._shortcut(self.on_check_network))
+
+    @staticmethod
+    def _shortcut(func):
+        def handler(_event=None):
+            func()
+            return "break"
+
+        return handler
+
+    # ------------------------------------------------------------ 状态与忙碌
+
+    def _set_status(self, text: str, kind: str = "idle") -> None:
+        self.status_label.configure(text=text, bg=STATUS_BG.get(kind, STATUS_BG["idle"]))
+        if kind in ("run",):
+            self._busy(True)
+        elif kind in ("ok", "err", "warn", "idle"):
+            self._busy(False)
+
+    def _busy(self, on: bool) -> None:
+        """顶部那条细进度条：只在真的在干活时出现，静止的界面不该有东西在动。"""
+        if on and not self._progress_on:
+            self.progress.pack(side="right", padx=(0, 10))
+            self.progress.start(14)
+            self._progress_on = True
+        elif not on and self._progress_on:
+            self.progress.stop()
+            self.progress.pack_forget()
+            self._progress_on = False
+
+    def _toggle_password(self) -> None:
+        self.pass_entry.configure(show="" if self.show_pass_var.get() else "●")
 
     # ------------------------------------------------------------ 配置 <-> 界面
 
@@ -344,6 +768,20 @@ class SetupApp:
         self.user_var.set(self.old_creds.username)
         self._refresh_field_choices()
         self._update_body_hint()
+        self._update_cred_hint()
+
+    def _update_cred_hint(self) -> None:
+        """已经存过密码就直说，省得用户以为要重打一遍。"""
+        base = "密码用 Windows DPAPI 加密保存在 credentials.dat，只有当前 Windows 账号能解开；配置里只会有 {username} / {password} 占位符。"
+        if getattr(self, "cred_hint", None) is None:
+            return
+        if self.old_creds.complete:
+            self.cred_hint.configure(
+                text=f"已保存过 {secrets.mask_username(self.old_creds.username)} 的密码，密码框留空就沿用它。"
+                "密码用 DPAPI 加密存在 credentials.dat，配置里只有占位符。"
+            )
+        else:
+            self.cred_hint.configure(text=base)
 
     def _on_body_modified(self, _event=None) -> None:
         """请求体一改就刷新字段下拉框（用 <<Modified>> 标志去重，避免递归触发）。"""
@@ -581,6 +1019,12 @@ class SetupApp:
         if not self.preflight_var.get().strip():
             self.log("  如果登录失败且响应缺少 userip/token 之类参数，把「登录前跳转」填成认证页地址再试。", "info")
         self.log("  下一步：填好 ③ 里的账号密码，点「测试登录」。", "info")
+        self._set_status("请求已识别", "ok")
+        # 解析完人手一般就在键盘上，直接跳到第一个还空着的输入框，省一次 Tab
+        if not self.user_var.get().strip():
+            self.user_entry.focus_set()
+        elif not self.pass_var.get() and not self.old_creds.complete:
+            self.pass_entry.focus_set()
 
     def on_check_network(self) -> None:
         # 先在主线程把界面内容读出来。Tk 变量不是线程安全的，
@@ -593,17 +1037,26 @@ class SetupApp:
             self.log(f"配置还不完整，先跳过认证服务器检查：{exc}", "warn")
             target = ""
 
+        self._set_status("检查网络…", "run")
+
         def work():
-            ip = net.local_ip()
-            online, why = net.online()
-            self.log(f"本机 IP：{ip}", "info")
-            self.log(f"联网状态：{why}", "ok" if online else "warn")
-            if not target:
-                return
-            if net.portal_reachable(target):
-                self.log(f"认证服务器可达：{target}", "ok")
-            else:
-                self.log(f"认证服务器不可达：{target}（可能不在校园网内 / 未连 Wi-Fi）", "err")
+            try:
+                ip = net.local_ip()
+                online, why = net.online()
+                self.log(f"本机 IP：{ip}", "info")
+                self.log(f"联网状态：{why}", "ok" if online else "warn")
+                if not target:
+                    self.root.after(0, lambda: self._set_status("网络已检查", "idle"))
+                    return
+                if net.portal_reachable(target):
+                    self.log(f"认证服务器可达：{target}", "ok")
+                    self.root.after(0, lambda: self._set_status("网关可达", "ok"))
+                else:
+                    self.log(f"认证服务器不可达：{target}（可能不在校园网内 / 未连 Wi-Fi）", "err")
+                    self.root.after(0, lambda: self._set_status("网关不可达", "err"))
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"✗ 检查网络出错：{type(exc).__name__}: {exc}", "err")
+                self.root.after(0, lambda: self._set_status("检查出错", "err"))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -612,6 +1065,7 @@ class SetupApp:
         if getattr(self, "_doctor_running", False):
             return
         self._doctor_running = True
+        self._set_status("自检中…", "run")
         self.log("——————————————————")
         self.log("开始自检：加密存储 / 配置 / 请求模板 / 网络…", "info")
 
@@ -620,6 +1074,7 @@ class SetupApp:
                 checks = doctor_mod.run(probe=True)
             except Exception as exc:  # noqa: BLE001
                 self.log(f"✗ 自检出错：{type(exc).__name__}: {exc}", "err")
+                self.root.after(0, lambda: self._set_status("自检出错", "err"))
                 return
             finally:
                 self._doctor_running = False
@@ -631,8 +1086,10 @@ class SetupApp:
                 self.log(f"自检发现 {len(bad)} 个问题（见上），对应处理办法：", "warn")
                 for item in bad:
                     self.log(f"  · {item.title}：{doctor_mod.HINT.get(item.title, '见 README 的「故障排查」')}", "warn")
+                self.root.after(0, lambda: self._set_status(f"自检 {len(bad)} 个问题", "warn"))
             else:
                 self.log("✓ 自检通过：这台机器上可以直接登录。", "ok")
+                self.root.after(0, lambda: self._set_status("自检通过", "ok"))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -667,7 +1124,7 @@ class SetupApp:
 
         self.testing = True
         self.test_btn.configure(state="disabled", text="测试中…")
-        self.status_label.configure(text="正在登录…", style="Run.TLabel")
+        self._set_status("正在登录…", "run")
         self.log("——————————————————")
         self.log(f"开始测试登录：{cfg['login']['method']} {cfg['login']['url']}", "info")
 
@@ -678,7 +1135,7 @@ class SetupApp:
                 if result.ok:
                     self.log(f"✓ 登录成功：{result.message}", "ok")
                     self.log(f"  耗时 {time.time() - started:.1f}s，尝试 {result.attempts} 次", "info")
-                    self.root.after(0, lambda: self.status_label.configure(text="✓ 登录成功", style="Ok.TLabel"))
+                    self.root.after(0, lambda: self._set_status("登录成功", "ok"))
                 else:
                     self.log(f"✗ 登录失败：{result.message}", "err")
                     if result.hint:
@@ -688,10 +1145,10 @@ class SetupApp:
                     if snippet:
                         # detail 里密码已经打过码，body 是原文，别往界面上贴
                         self.log(f"  服务器返回：{snippet[:600]}", "warn")
-                    self.root.after(0, lambda: self.status_label.configure(text="✗ 登录失败", style="Err.TLabel"))
+                    self.root.after(0, lambda: self._set_status("登录失败", "err"))
             except Exception as exc:  # noqa: BLE001
                 self.log(f"✗ 出错：{type(exc).__name__}: {exc}", "err")
-                self.root.after(0, lambda: self.status_label.configure(text="✗ 出错", style="Err.TLabel"))
+                self.root.after(0, lambda: self._set_status("出错了", "err"))
             finally:
                 def done():
                     self.testing = False
@@ -726,7 +1183,8 @@ class SetupApp:
         self.cfg = cfg
         self.old_creds = secrets.Credentials(username=username, password=password)
         self.pass_var.set("")
-        self.status_label.configure(text=f"✓ 已保存，账号 {secrets.mask_username(username)}", style="Ok.TLabel")
+        self._update_cred_hint()
+        self._set_status(f"已保存 · {secrets.mask_username(username)}", "ok")
         self.log(f"✓ 配置已保存：{paths.rel(path)}", "ok")
         self.log(f"✓ 账号密码已加密保存：{paths.rel(paths.CREDENTIAL_FILE)}", "ok")
         self.log("现在可以双击桌面上的「校园网一键登录」了。", "info")
@@ -771,6 +1229,21 @@ class SetupApp:
             os.startfile(paths.LOG_FILE)  # type: ignore[attr-defined]
         except OSError:
             subprocess.Popen(["notepad.exe", paths.LOG_FILE])
+
+    def on_copy_log(self) -> None:
+        """把「运行信息」整段复制走：出问题时要贴给我看的就是这一段。"""
+        text = self.log_text.get("1.0", "end").strip()
+        if not text:
+            self.log("运行信息还是空的。", "warn")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self.log(f"✓ 已复制 {len(text)} 个字符到剪贴板。", "ok")
+
+    def on_clear_log(self) -> None:
+        self.log_text.configure(state="normal")
+        self.log_text.delete("1.0", "end")
+        self.log_text.configure(state="disabled")
 
     def _on_close(self) -> None:
         self.root.destroy()

@@ -53,12 +53,15 @@ def main() -> int:
             yield child
             yield from walk(child)
 
+    def zero_sized():
+        return [
+            w.winfo_class()
+            for w in walk(root)
+            if w.winfo_ismapped() and (w.winfo_width() < 2 or w.winfo_height() < 2)
+        ]
+
     # 布局检查：显示出来的控件都要有实际尺寸，内容不能超出窗口
-    zero = [
-        f"{w.winfo_class()}"
-        for w in walk(root)
-        if w.winfo_ismapped() and (w.winfo_width() < 2 or w.winfo_height() < 2)
-    ]
+    zero = zero_sized()
     if zero:
         problems.append(f"有控件尺寸为 0：{zero[:6]}")
     if app.log_text.winfo_height() < 40:
@@ -69,6 +72,42 @@ def main() -> int:
     window_bottom = root.winfo_rooty() + root.winfo_height()
     if content_bottom > window_bottom + 2:
         problems.append(f"内容超出窗口底部 {content_bottom - window_bottom}px，会被裁掉")
+
+    # 小窗口（1366x768 的本子上常见）：表单要能滚，日志区不能整块消失
+    root.geometry("800x600")
+    root.update_idletasks()
+    root.update()
+    if app.log_text.winfo_height() < 20:
+        problems.append(f"800x600 下日志区被挤没了：{app.log_text.winfo_height()}px")
+    small_zero = zero_sized()
+    if small_zero:
+        problems.append(f"800x600 下有控件尺寸为 0：{small_zero[:6]}")
+    root.geometry("940x880")
+    root.update_idletasks()
+    root.update()
+
+    # 界面细节：密码可见开关、快捷键、顶部状态徽标
+    if app.pass_entry.cget("show") != "●":
+        problems.append("密码框默认没有遮挡")
+    app.show_pass_var.set(True)
+    app._toggle_password()
+    if app.pass_entry.cget("show") != "":
+        problems.append("勾「显示」之后密码还是被遮挡")
+    app.show_pass_var.set(False)
+    app._toggle_password()
+    if app.pass_entry.cget("show") != "●":
+        problems.append("取消「显示」之后密码没重新遮挡")
+    for seq in ("<Control-Return>", "<Control-s>", "<F5>"):
+        if not root.bind(seq):
+            problems.append(f"快捷键没绑上：{seq}")
+    app._set_status("测试中", "run")
+    root.update()
+    if not app._progress_on:
+        problems.append("忙碌时进度条没出来")
+    app._set_status("完成", "ok")
+    root.update()
+    if app._progress_on:
+        problems.append("空闲了进度条还挂着")
 
     # 1) 粘贴 cURL 后应当自动填好并替换占位符
     app.curl_text.insert("1.0", SAMPLE_CURL)
