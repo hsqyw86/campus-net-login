@@ -109,6 +109,34 @@ def main() -> int:
     if app._progress_on:
         problems.append("空闲了进度条还挂着")
 
+    # 大肥鱼：吉祥物 + 状态灯
+    if app.mascot.winfo_width() < 40 or app.mascot.winfo_height() < 40:
+        problems.append(f"吉祥物没画出来：{app.mascot.winfo_width()}x{app.mascot.winfo_height()}")
+    if app.mascot.mood != "happy":
+        problems.append(f"成功后鱼的脸色不对：{app.mascot.mood}")
+    app._set_status("出错了", "err")
+    root.update()
+    if app.mascot.mood != "sad":
+        problems.append(f"失败后鱼的脸色不对：{app.mascot.mood}")
+    app._set_status("准备就绪", "idle")
+    root.update()
+    if app.mascot.mood != "idle":
+        problems.append(f"复位后鱼的脸色不对：{app.mascot.mood}")
+    # 动起来：推进两帧，尾巴坐标应当变了
+    tail_before = app.mascot.coords(app.mascot._tail)
+    app.mascot._step()
+    app.mascot._step()
+    if app.mascot.coords(app.mascot._tail) == tail_before:
+        problems.append("鱼尾巴不会动")
+    for mood in ("busy", "happy", "sad", "warn", "idle"):
+        try:
+            app.mascot.set_mood(mood)
+            app.mascot._step()
+        except Exception as exc:  # noqa: BLE001
+            problems.append(f"表情 {mood} 画崩了：{exc}")
+    if app.footer_fish.winfo_width() < 10:
+        problems.append("角落那条小鱼没画出来")
+
     # 1) 粘贴 cURL 后应当自动填好并替换占位符
     app.curl_text.insert("1.0", SAMPLE_CURL)
     app.on_parse_curl()

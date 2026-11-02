@@ -200,7 +200,7 @@ def main(argv=None) -> int:
         ui = ui if isinstance(ui, dict) else {}
         if not outcome.already_online and not args.quiet and ui.get("notify_on_success", True):
             elapsed = outcome.result.elapsed if outcome.result else 0.0
-            toast(f"✓ 校园网已连接（{elapsed:.1f}s）")
+            toast(f"大肥鱼：校园网连上了（{elapsed:.1f}s）")
         return 0
 
     log.warning("结果：%s", outcome.message)

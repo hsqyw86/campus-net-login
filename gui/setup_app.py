@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import ctypes
 import json
+import math
 import os
 import queue
+import random
 import re
 import subprocess
 import sys
@@ -48,20 +50,28 @@ FONT_MONO = ("Consolas", 9)
 FONT_PILL = (FONT_FAMILY, 8, "bold")
 
 # 颜色写死，不跟系统主题走：vista / 经典 / 高对比度主题下，界面都长同一个样子。
+# 底色偏蓝一点点、主色亮一点点 —— 看上去没那么「办公软件」，但对比度仍然够。
 COLOR = {
-    "bg": "#f1f3f6",
+    "bg": "#f0f6ff",
     "card": "#ffffff",
-    "border": "#d5dce6",
+    "border": "#dbe6f5",
     "text": "#1f2933",
     "muted": "#6b7280",
-    "accent": "#2563eb",
-    "accent_dark": "#1d4ed8",
-    "ok": "#0f7b4f",
-    "warn": "#b45309",
-    "err": "#b91c1c",
-    "header": "#132239",
-    "header_muted": "#9fb3c8",
-    "bar": "#e7ebf2",
+    "accent": "#2f86f6",
+    "accent_dark": "#1d6fdc",
+    "accent_soft": "#e6f0ff",
+    "ok": "#12a150",
+    "warn": "#c2760a",
+    "err": "#dc3f3f",
+    "header": "#122a4d",
+    "header_muted": "#9fb8d8",
+    "bar": "#e8f1fd",
+    # 大肥鱼的配色
+    "fish": "#5aa9f7",
+    "fish_dark": "#2f7fd6",
+    "fish_light": "#cfe8ff",
+    "fish_belly": "#eaf5ff",
+    "blush": "#ffb3c1",
 }
 STATUS_BG = {
     "idle": "#475569",
@@ -70,6 +80,8 @@ STATUS_BG = {
     "warn": COLOR["warn"],
     "err": COLOR["err"],
 }
+# 界面状态 → 鱼的脸色
+MOOD_BY_STATUS = {"idle": "idle", "run": "busy", "ok": "happy", "warn": "warn", "err": "sad"}
 SHORTCUT_HINT = "快捷键：Ctrl+Enter 测试登录 · Ctrl+S 保存 · F5 检查网络"
 
 NO_FIELD = "（不使用）"
@@ -88,6 +100,234 @@ def _enable_dpi() -> None:
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
     except Exception:
         pass
+
+
+class FishMascot(tk.Canvas):
+    """大肥鱼 —— 一条用画布现画的胖鱼，不加载任何图片文件。
+
+    项目是零依赖的，鱼也得零依赖：所有线条都是 create_oval / create_polygon 拼出来的。
+    它顺便还是状态灯：
+      干活中（busy）  → 张嘴吐泡泡，尾巴摆得快
+      成功（happy）  → 眯眼笑，旁边冒两颗小星星
+      失败（sad）    → 眼睛打叉，头上挂一滴汗
+      提示（warn）   → 抿嘴
+    """
+
+    DESIGN = 64.0
+    MOODS = ("idle", "busy", "happy", "sad", "warn")
+
+    def __init__(
+        self,
+        master,
+        size: int = 64,
+        bg: str = COLOR["header"],
+        animate: bool = True,
+        halo: str = "",
+    ) -> None:
+        super().__init__(master, width=size, height=size, bg=bg, highlightthickness=0, bd=0)
+        self._scale = size / self.DESIGN
+        self._mood = "idle"
+        self._phase = 0.0
+        self._blink_left = 0
+        # 头几秒先不眨眼：截图、演示的时候正好闭着眼会很奇怪
+        self._blink_at = random.randint(60, 110)
+        self._running = bool(animate)
+        self._job = None
+        self._halo = halo
+        self._draw()
+        self._apply_mood()
+        if self._running:
+            self._schedule()
+
+    # ---------------------------------------------------------------- 画元素
+
+    def _p(self, x: float, y: float):
+        return (x * self._scale, y * self._scale)
+
+    def _box(self, x1: float, y1: float, x2: float, y2: float):
+        return (x1 * self._scale, y1 * self._scale, x2 * self._scale, y2 * self._scale)
+
+    def _line(self, points, width: float = 2.0, smooth: bool = True, **kw):
+        flat = []
+        for x, y in points:
+            flat.extend(self._p(x, y))
+        return self.create_line(
+            *flat, width=max(1.0, width * self._scale), capstyle="round", smooth=smooth, **kw
+        )
+
+    def _draw(self) -> None:
+        # 太小的尺寸（页脚那条）只画轮廓 + 眼睛，否则细节糊成一团
+        simple = self._scale < 0.45
+        edge = max(1.0, 1.2 * self._scale)
+
+        if self._halo:
+            self.create_oval(*self._box(2, 2, 62, 62), fill=self._halo, outline="")
+
+        # 泡泡先画，压在鱼身后面
+        self._bubbles = [
+            self.create_oval(0, 0, 0, 0, outline="", fill="#8fc2ff", state="hidden") for _ in range(3)
+        ]
+        # 尾巴：摆动时只动两个尖角
+        self._tail = self.create_polygon(
+            *self._p(14, 34), *self._p(6, 26), *self._p(6, 42),
+            fill=COLOR["fish_dark"], outline="",
+        )
+        # 背鳍
+        self.create_polygon(
+            *self._p(26, 21), *self._p(32, 12), *self._p(39, 22),
+            fill=COLOR["fish_dark"], outline="",
+        )
+        # 身子 + 肚皮 + 背上一点高光
+        self.create_oval(
+            *self._box(11, 18, 51, 50), fill=COLOR["fish"], outline=COLOR["fish_dark"], width=edge
+        )
+        if not simple:
+            self.create_oval(*self._box(17, 33, 47, 49), fill=COLOR["fish_belly"], outline="")
+            self._fin = self.create_oval(
+                *self._box(21, 32, 32, 42), fill=COLOR["fish_light"], outline=""
+            )
+            self.create_oval(*self._box(26, 35, 33, 40), fill=COLOR["blush"], outline="")
+            self._highlight = self._line([(25, 26), (33, 23)], width=2.4, fill="#9fd0ff")
+        else:
+            self._fin = None
+            self._highlight = None
+
+        # 眼睛三套：普通 / 眯眼笑 / 打叉
+        self._eye_white = self.create_oval(*self._box(35, 24, 47, 36), fill="#ffffff", outline="")
+        self._pupil = self.create_oval(*self._box(40, 27, 46, 33), fill="#16324f", outline="")
+        self._shine = self.create_oval(*self._box(41.4, 28.2, 43.8, 30.6), fill="#ffffff", outline="")
+        self._eye_closed = self._line([(37, 30), (41, 26), (46, 30)], width=2.2, fill="#16324f", state="hidden")
+        self._eye_x1 = self._line([(38, 26), (45, 34)], width=2.2, fill="#16324f", state="hidden")
+        self._eye_x2 = self._line([(45, 26), (38, 34)], width=2.2, fill="#16324f", state="hidden")
+
+        # 嘴四套：微笑 / 张嘴 / 抿嘴 / 撇嘴
+        self._mouth_smile = self._line([(41, 38), (45, 41), (49, 38)], width=1.8, fill="#16324f")
+        self._mouth_open = self.create_oval(*self._box(43, 38, 49, 42), fill="#16324f", outline="", state="hidden")
+        self._mouth_flat = self._line([(42, 39), (49, 39)], width=2.0, fill="#16324f", state="hidden")
+        self._mouth_frown = self._line([(42, 42), (46, 39), (50, 42)], width=1.8, fill="#16324f", state="hidden")
+
+        # 失败时那滴汗
+        self._sweat = self.create_oval(*self._box(50, 15, 55, 23), fill="#bfe3ff", outline="", state="hidden")
+        # 成功时的两颗小星星
+        self._stars = [
+            self.create_text(
+                *self._p(53, 16),
+                text="✦",
+                fill="#ffd76a",
+                font=(FONT_FAMILY, max(6, int(10 * self._scale))),
+                state="hidden",
+            ),
+            self.create_text(
+                *self._p(57, 26),
+                text="✦",
+                fill="#ffd76a",
+                font=(FONT_FAMILY, max(5, int(7 * self._scale))),
+                state="hidden",
+            ),
+        ]
+
+    # ---------------------------------------------------------------- 表情
+
+    def set_mood(self, mood: str) -> None:
+        self._mood = mood if mood in self.MOODS else "idle"
+        self._apply_mood()
+
+    @property
+    def mood(self) -> str:
+        return self._mood
+
+    def _apply_mood(self) -> None:
+        happy = self._mood == "happy"
+        sad = self._mood == "sad"
+        busy = self._mood == "busy"
+        flat = self._mood == "warn"
+
+        normal_eye = not (happy or sad)
+        for item in (self._eye_white, self._pupil, self._shine):
+            self.itemconfigure(item, state="normal" if normal_eye else "hidden")
+        self.itemconfigure(self._eye_closed, state="normal" if happy else "hidden")
+        for item in (self._eye_x1, self._eye_x2):
+            self.itemconfigure(item, state="normal" if sad else "hidden")
+
+        self.itemconfigure(self._mouth_open, state="normal" if busy else "hidden")
+        self.itemconfigure(self._mouth_flat, state="normal" if flat else "hidden")
+        self.itemconfigure(self._mouth_frown, state="normal" if sad else "hidden")
+        self.itemconfigure(
+            self._mouth_smile, state="normal" if (not busy and not flat and not sad) else "hidden"
+        )
+        if happy:
+            # 笑的时候嘴再张一点点
+            self.coords(self._mouth_smile, *self._p(40, 37), *self._p(45, 42), *self._p(50, 37))
+
+        self.itemconfigure(self._sweat, state="normal" if sad else "hidden")
+        for item in self._stars:
+            self.itemconfigure(item, state="normal" if happy else "hidden")
+
+    # ---------------------------------------------------------------- 动
+
+    def _schedule(self) -> None:
+        if not self._running:
+            return
+        self._job = self.after(90, self._tick)
+
+    def _tick(self) -> None:
+        self._job = None
+        try:
+            self._step()
+        except tk.TclError:  # 窗口已经销毁
+            return
+        self._schedule()
+
+    def _step(self) -> None:
+        """推进一帧：摆尾、抖鳍、吐泡、偶尔眨眼。"""
+        self._phase += 1.0
+        speed = 0.62 if self._mood == "busy" else 0.34
+
+        wag = math.sin(self._phase * speed) * 4.0
+        self.coords(self._tail, *self._p(14, 34), *self._p(6, 26 + wag), *self._p(6, 42 + wag))
+
+        if self._fin is not None:
+            fin = math.sin(self._phase * speed * 1.7) * 1.1
+            self.coords(self._fin, *self._box(21, 32 + fin, 32, 42 + fin))
+
+        # 眨眼：普通表情下每 2~5 秒眨一次，闭眼 3 帧
+        if self._blink_left > 0:
+            self._blink_left -= 1
+            if self._blink_left == 0:
+                self._apply_mood()
+        elif self._phase >= self._blink_at and self._mood in ("idle", "busy"):
+            self._blink_left = 3
+            self._blink_at = self._phase + random.randint(18, 46)
+            for item in (self._eye_white, self._pupil, self._shine):
+                self.itemconfigure(item, state="hidden")
+            self.itemconfigure(self._eye_closed, state="normal")
+
+        # 泡泡：从嘴边冒出来，斜着往上飘
+        if self._mood == "sad":
+            for item in self._bubbles:
+                self.itemconfigure(item, state="hidden")
+            return
+        rate = 0.022 if self._mood == "busy" else 0.007
+        for k, item in enumerate(self._bubbles):
+            t = (self._phase * rate + k / float(len(self._bubbles))) % 1.0
+            if t > 0.94:
+                self.itemconfigure(item, state="hidden")
+                continue
+            x = 50 + t * 11.0
+            y = 31 - t * 25.0
+            r = 2.2 - t * 1.3
+            self.coords(item, *self._box(x - r, y - r, x + r, y + r))
+            self.itemconfigure(item, state="normal")
+
+    def destroy(self) -> None:  # pragma: no cover - 只在关窗口时走到
+        self._running = False
+        if self._job is not None:
+            try:
+                self.after_cancel(self._job)
+            except tk.TclError:
+                pass
+            self._job = None
+        super().destroy()
 
 
 class SetupApp:
@@ -111,6 +351,7 @@ class SetupApp:
         self._load_into_ui(self.cfg)
         self._refresh_autostart_state()
         self._poll_log()
+        self.log("大肥鱼在这儿。把浏览器里那条登录请求粘到第①步，剩下的我来。", "info")
 
         root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -388,17 +629,25 @@ class SetupApp:
         header = tk.Frame(self.root, bg=COLOR["header"])
         header.pack(side="top", fill="x")
         inner = tk.Frame(header, bg=COLOR["header"])
-        inner.pack(fill="x", padx=16, pady=(12, 11))
+        inner.pack(fill="x", padx=16, pady=(10, 8))
+
+        # 左边这条胖鱼是这个界面的吉祥物，也是状态指示灯
+        self.mascot = FishMascot(inner, size=70, bg=COLOR["header"], halo="#1b3c68")
+        self.mascot.pack(side="left", padx=(0, 12))
+
+        text_box = tk.Frame(inner, bg=COLOR["header"])
+        text_box.pack(side="left", pady=(4, 0))
         tk.Label(
-            inner, text="校园网一键登录", font=FONT_TITLE, bg=COLOR["header"], fg="#ffffff"
-        ).pack(side="left")
+            text_box, text="校园网一键登录", font=FONT_TITLE, bg=COLOR["header"], fg="#ffffff"
+        ).pack(anchor="w")
         tk.Label(
-            inner,
-            text="通用 Portal 认证 · 配置一次，以后双击就登录",
+            text_box,
+            text="大肥鱼带你进校园网 · 配置一次，以后双击就登录",
             font=FONT_SUB,
             bg=COLOR["header"],
             fg=COLOR["header_muted"],
-        ).pack(side="left", padx=(12, 0), pady=(10, 0))
+        ).pack(anchor="w", pady=(1, 0))
+
         self.status_label = tk.Label(
             inner, text="准备就绪", font=FONT_PILL, bg=STATUS_BG["idle"], fg="#ffffff", padx=10, pady=3
         )
@@ -635,8 +884,21 @@ class SetupApp:
         right = ttk.Frame(box)
         right.grid(row=0, column=1, sticky="e")
         self.autostart_var = tk.BooleanVar(value=False)
-        self.autostart_check = ttk.Checkbutton(
-            right, text="开机自动登录", variable=self.autostart_var, command=self.on_toggle_autostart
+        # 用 tk 的复选框：clam 主题那个 indicator 勾选后画的是个叉，看着像「没选」
+        self.autostart_check = tk.Checkbutton(
+            right,
+            text="开机自动登录",
+            variable=self.autostart_var,
+            command=self.on_toggle_autostart,
+            font=FONT,
+            bg=COLOR["bg"],
+            activebackground=COLOR["bg"],
+            fg=COLOR["text"],
+            activeforeground=COLOR["text"],
+            selectcolor="#ffffff",
+            bd=0,
+            highlightthickness=0,
+            cursor="hand2",
         )
         self.autostart_check.pack(side="right")
 
@@ -690,9 +952,12 @@ class SetupApp:
         tk.Frame(bar, bg=COLOR["border"], height=2).pack(side="top", fill="x")
         inner = tk.Frame(bar, bg=COLOR["bar"])
         inner.pack(fill="x", padx=16, pady=5)
+        # 角落里一条不会动的小鱼，签名用
+        self.footer_fish = FishMascot(inner, size=18, bg=COLOR["bar"], animate=False)
+        self.footer_fish.pack(side="left", padx=(0, 6))
         self.footer_left = tk.Label(
             inner,
-            text=f"配置文件：{paths.rel(paths.CONFIG_FILE)}",
+            text=f"大肥鱼 · 配置文件：{paths.rel(paths.CONFIG_FILE)}",
             font=FONT_SMALL,
             bg=COLOR["bar"],
             fg=COLOR["muted"],
@@ -724,6 +989,11 @@ class SetupApp:
 
     def _set_status(self, text: str, kind: str = "idle") -> None:
         self.status_label.configure(text=text, bg=STATUS_BG.get(kind, STATUS_BG["idle"]))
+        mascot = getattr(self, "mascot", None)
+        if mascot is not None:
+            mood = MOOD_BY_STATUS.get(kind)
+            if mood:
+                mascot.set_mood(mood)
         if kind in ("run",):
             self._busy(True)
         elif kind in ("ok", "err", "warn", "idle"):
