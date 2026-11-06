@@ -66,6 +66,12 @@ def main() -> int:
         problems.append(f"有控件尺寸为 0：{zero[:6]}")
     if app.log_text.winfo_height() < 40:
         problems.append(f"日志区太矮，可能被挤没了：{app.log_text.winfo_height()}")
+    # 细节卡收起时表单比画布矮，多出来的高度应该让给日志区，不该在按钮上方留一条空白带
+    box = app._canvas.bbox("all")
+    form_bottom = box[3] if box else 0
+    canvas_h = app._canvas.winfo_height()
+    if form_bottom and canvas_h - form_bottom > 6:
+        problems.append(f"表单下方留了 {canvas_h - form_bottom}px 空白带")
     content_bottom = max(
         (w.winfo_rooty() + w.winfo_height() for w in walk(root) if w.winfo_ismapped()), default=0
     )

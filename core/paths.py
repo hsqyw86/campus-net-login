@@ -16,6 +16,7 @@ CONFIG_FILE = os.environ.get("CAMPUSNET_CONFIG") or os.path.join(ROOT, "config.j
 EXAMPLE_CONFIG_FILE = os.path.join(ROOT, "config.example.json")
 CREDENTIAL_FILE = os.environ.get("CAMPUSNET_CREDENTIALS") or os.path.join(ROOT, "credentials.dat")
 STATE_FILE = os.environ.get("CAMPUSNET_STATE") or os.path.join(ROOT, "state.json")
+WINDOW_FILE = os.environ.get("CAMPUSNET_WINDOW") or os.path.join(ROOT, "window.json")
 HOOK_FILE = os.environ.get("CAMPUSNET_HOOK") or os.path.join(ROOT, "custom_hook.py")
 LOG_DIR = os.path.join(ROOT, "logs")
 LOG_FILE = os.path.join(LOG_DIR, "login.log")

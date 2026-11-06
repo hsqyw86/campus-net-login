@@ -102,6 +102,41 @@ def _enable_dpi() -> None:
         pass
 
 
+def _make_fish_icon(size: int = 32) -> tk.PhotoImage:
+    """窗口 / 任务栏图标：像素级画一条鱼。
+
+    `iconphoto` 只接受 PhotoImage，而项目不带图片文件，所以这里按像素算颜色拼出来。
+    """
+    bg = COLOR["header"]
+    rows = []
+    for y in range(size):
+        line = []
+        for x in range(size):
+            nx = (x + 0.5) / size * 32.0
+            ny = (y + 0.5) / size * 32.0
+            color = bg
+            # 尾巴（越靠左越宽）
+            if 6.0 <= nx <= 13.0 and abs(ny - 16.0) <= (13.0 - nx) * 1.35 + 0.6:
+                color = COLOR["fish_dark"]
+            # 背鳍
+            if 15.0 <= nx <= 22.5 and 5.0 <= ny <= 11.0 and (ny - 5.0) <= (nx - 15.0) * 0.85 + 0.6:
+                color = COLOR["fish_dark"]
+            # 身子（外圈压一道深色描边）
+            dist = ((nx - 18.0) / 11.0) ** 2 + ((ny - 16.0) / 8.0) ** 2
+            if dist <= 1.0:
+                color = COLOR["fish_dark"] if dist > 0.74 else COLOR["fish"]
+            # 眼睛
+            if ((nx - 23.0) / 3.3) ** 2 + ((ny - 13.4) / 3.3) ** 2 <= 1.0:
+                color = "#ffffff"
+            if ((nx - 23.8) / 1.6) ** 2 + ((ny - 13.6) / 1.6) ** 2 <= 1.0:
+                color = "#16324f"
+            line.append(color)
+        rows.append(" ".join(line))
+    img = tk.PhotoImage(width=size, height=size)
+    img.put("{" + "} {".join(rows) + "}")
+    return img
+
+
 class FishMascot(tk.Canvas):
     """大肥鱼 —— 一条用画布现画的胖鱼，不加载任何图片文件。
 
@@ -346,6 +381,12 @@ class SetupApp:
         win_h = min(940, max(620, screen_h - 120))
         root.geometry(f"{win_w}x{win_h}+{max(0, (screen_w - win_w) // 2)}+{max(0, (screen_h - win_h) // 3)}")
         root.minsize(800, 600)
+        self._icon = _make_fish_icon(32)
+        try:
+            root.iconphoto(True, self._icon)
+        except tk.TclError:  # pragma: no cover - 极少见的无窗口系统环境
+            pass
+        self._restore_window()
         self._build_style()
         self._build_ui()
         self._load_into_ui(self.cfg)
@@ -533,8 +574,9 @@ class SetupApp:
         outer = ttk.Frame(self.root, padding=(16, 12, 16, 10))
         outer.pack(fill="both", expand=True)
         outer.columnconfigure(0, weight=1)
-        outer.rowconfigure(0, weight=1)  # 三步表单：可滚动，窗口变高时优先给它
-        outer.rowconfigure(2, weight=0)  # 运行信息：固定高度，别抢表单的地方
+        self._outer = outer
+        outer.rowconfigure(0, weight=0)  # 三步表单：高度跟着内容走，收起细节时不留空白
+        outer.rowconfigure(2, weight=1)  # 运行信息：多出来的高度全给它
 
         content = self._build_scroll_area(outer, row=0)
         self._build_step1(content, row=0)
@@ -596,6 +638,7 @@ class SetupApp:
 
         def sync(_event=None) -> None:
             self._canvas.itemconfigure(window, width=self._canvas.winfo_width())
+            self._fit_canvas(content)
             self._canvas.configure(scrollregion=self._canvas.bbox("all"))
             tall = content.winfo_reqheight() > self._canvas.winfo_height() + 2
             if tall:
@@ -610,6 +653,26 @@ class SetupApp:
         self._canvas.bind("<Enter>", lambda _e: self._canvas.bind_all("<MouseWheel>", self._on_wheel))
         self._canvas.bind("<Leave>", lambda _e: self._canvas.unbind_all("<MouseWheel>"))
         return content
+
+    def _fit_canvas(self, content) -> None:
+        """表单比窗口矮的时候，把多出来的高度让给下面的运行信息，不留一块空白。
+
+        只设画布的高度、不动行权重，所以不会来回抖：算出来的值不依赖画布自己的高度。
+        """
+        outer = getattr(self, "_outer", None)
+        if outer is None:
+            return
+        req = content.winfo_reqheight()
+        if req <= 0:
+            return
+        fixed = 0
+        for widget in (getattr(self, "_actions_box", None), getattr(self, "_log_card", None)):
+            if widget is not None:
+                fixed += widget.winfo_reqheight()
+        avail = outer.winfo_height() - fixed - 34  # 34 = 两处间距 + 上下内边距的余量
+        height = max(160, min(req, avail)) if avail > 0 else max(160, req)
+        if str(self._canvas.cget("height")) != str(height):
+            self._canvas.configure(height=height)
 
     def _update_scroll_hint(self, first: float, last: float, content) -> None:
         hint = getattr(self, "_scroll_hint", None)
@@ -720,7 +783,23 @@ class SetupApp:
         ).pack(side="left", padx=12)
 
     def _build_step2(self, parent, row: int) -> None:
-        card = self._card(parent, "③ 请求内容（一般不用改，粘贴 cURL 时自动填好）", row)
+        outer = self._card(parent, "③ 请求内容（一般不用改，粘贴 cURL 时自动填好）", row)
+        outer.columnconfigure(0, weight=1)
+
+        # 默认收起：绝大多数人只要粘一条 cURL，没必要先看二十个技术选项。
+        # 收起时这一行摘要要能说清「里面配的是什么」。
+        head = ttk.Frame(outer, style="Card.TFrame")
+        head.grid(row=0, column=0, sticky="ew")
+        head.columnconfigure(0, weight=1)
+        self.detail_summary = ttk.Label(head, text="", style="CardHint.TLabel")
+        self.detail_summary.grid(row=0, column=0, sticky="w")
+        self.detail_toggle = ttk.Button(
+            head, text="展开修改", style="Mini.TButton", command=self.toggle_details
+        )
+        self.detail_toggle.grid(row=0, column=1, sticky="e")
+
+        card = ttk.Frame(outer, style="Card.TFrame")
+        self.detail_body = card
         card.columnconfigure(1, weight=1)
         card.columnconfigure(3, weight=1)
 
@@ -830,6 +909,50 @@ class SetupApp:
             json_frame, text="  选填，例：result = success（比关键字更准）", style="CardHint.TLabel"
         ).pack(side="left")
 
+        # 默认不 grid 出来，等 toggle_details 打开
+        self._details_open = False
+        # 摘要跟着改：收起状态下也得一眼看出配的是什么
+        for var in (self.url_var, self.method_var, self.ctype_var, self.ok_kw_var, self.json_path_var):
+            var.trace_add("write", lambda *_a: self._refresh_detail_summary())
+        self._refresh_detail_summary()
+
+    def toggle_details(self, open_: bool | None = None) -> None:
+        """展开 / 收起 ③ 请求内容。"""
+        target = (not self._details_open) if open_ is None else bool(open_)
+        self._details_open = target
+        if target:
+            self.detail_body.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+            self.detail_toggle.configure(text="收起")
+        else:
+            self.detail_body.grid_remove()
+            self.detail_toggle.configure(text="展开修改")
+
+    def _refresh_detail_summary(self) -> None:
+        """把请求内容缩成一行：POST /drcom/login · 表单 · 判定已设。"""
+        summary = getattr(self, "detail_summary", None)
+        if summary is None:
+            return
+        url = self.url_var.get().strip() if hasattr(self, "url_var") else ""
+        if not url:
+            text = "还没配：粘一条 cURL 就自动填好，也可以点「展开修改」自己填"
+        else:
+            method = (self.method_var.get() or "POST").upper()
+            ctype = {"form": "表单", "json": "JSON", "raw": "原始文本"}.get(self.ctype_var.get(), "表单")
+            text = f"{method} {self._short_url(url)} · {ctype}"
+            if self.json_path_var.get().strip():
+                text += f" · 判定 {self.json_path_var.get().strip()}"
+            elif self.ok_kw_var.get().strip():
+                text += " · 判定 关键字"
+        summary.configure(text=text)
+
+    @staticmethod
+    def _short_url(url: str, limit: int = 64) -> str:
+        """摘要里只留主机 + 路径，查询参数太长就截掉。"""
+        text = url.split("://", 1)[-1]
+        if len(text) > limit:
+            text = text[: limit - 1] + "…"
+        return text
+
     def _build_step3(self, parent, row: int) -> None:
         card = self._card(parent, "② 账号密码（加密存在本机）", row)
         card.columnconfigure(1, weight=1)
@@ -905,9 +1028,12 @@ class SetupApp:
         ttk.Label(box, text=SHORTCUT_HINT, style="Hint.TLabel").grid(
             row=1, column=0, columnspan=2, sticky="w", pady=(6, 0)
         )
+        self._actions_box = box
 
     def _build_log(self, parent, row: int) -> None:
         card = self._card(parent, "运行信息", row, pady=(4, 0))
+        card.grid_configure(sticky="nsew")  # 纵向也伸展：窗口变高时多出来的地方给日志
+        self._log_card = card
         card.columnconfigure(0, weight=1)
         card.rowconfigure(1, weight=1)
 
@@ -1039,6 +1165,7 @@ class SetupApp:
         self._refresh_field_choices()
         self._update_body_hint()
         self._update_cred_hint()
+        self._refresh_detail_summary()
 
     def _update_cred_hint(self) -> None:
         """已经存过密码就直说，省得用户以为要重打一遍。"""
@@ -1239,6 +1366,8 @@ class SetupApp:
             req = curlparse.parse_curl(text)
         except curlparse.CurlParseError as exc:
             self.log(f"解析失败：{exc}", "err")
+            # 解析不出来多半得手改，直接把这栏打开
+            self.toggle_details(True)
             messagebox.showwarning(APP_TITLE, str(exc))
             return
 
@@ -1288,7 +1417,8 @@ class SetupApp:
                 self.log(f"  注意：{warn}", "warn")
         if not self.preflight_var.get().strip():
             self.log("  如果登录失败且响应缺少 userip/token 之类参数，把「登录前跳转」填成认证页地址再试。", "info")
-        self.log("  下一步：填好 ③ 里的账号密码，点「测试登录」。", "info")
+        self.log("  下一步：填好 ② 里的账号密码，点「测试登录」。", "info")
+        self._refresh_detail_summary()
         self._set_status("请求已识别", "ok")
         # 解析完人手一般就在键盘上，直接跳到第一个还空着的输入框，省一次 Tab
         if not self.user_var.get().strip():
@@ -1515,7 +1645,54 @@ class SetupApp:
         self.log_text.delete("1.0", "end")
         self.log_text.configure(state="disabled")
 
+    # ------------------------------------------------------------ 窗口位置记忆
+
+    def _restore_window(self) -> None:
+        """上次关窗口时多大、在哪儿，这次还摆在那儿。
+
+        只认屏幕里还有一块的坐标：换了显示器 / 拔了扩展屏，那些旧坐标会把窗口扔到看不见的地方。
+        """
+        try:
+            with open(paths.WINDOW_FILE, "r", encoding="utf-8") as fh:
+                info = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(info, dict):
+            return
+        try:
+            w = int(info.get("width") or 0)
+            h = int(info.get("height") or 0)
+            x = int(info.get("x"))
+            y = int(info.get("y"))
+        except (TypeError, ValueError):
+            return
+        if w < 640 or h < 480:
+            return
+        screen_w, screen_h = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        w = min(w, screen_w)
+        h = min(h, screen_h)
+        if not (-w + 80 <= x <= screen_w - 80 and 0 <= y <= screen_h - 80):
+            return
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _save_window(self) -> None:
+        try:
+            if self.root.state() == "zoomed":
+                return
+            geo = self.root.geometry()  # 形如 940x880+100+80
+            size, _, rest = geo.partition("+")
+            w, _, h = size.partition("x")
+            x, _, y = rest.partition("+")
+            paths.write_json_atomic(
+                paths.WINDOW_FILE,
+                {"width": int(w), "height": int(h), "x": int(x), "y": int(y)},
+            )
+        except (OSError, ValueError, tk.TclError):
+            # 记不住窗口大小是小事，绝不能因此关不掉窗口
+            pass
+
     def _on_close(self) -> None:
+        self._save_window()
         self.root.destroy()
 
 
