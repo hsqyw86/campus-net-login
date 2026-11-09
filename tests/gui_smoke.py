@@ -16,6 +16,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from gui.setup_app import NO_FIELD, SetupApp  # noqa: E402
+from core import secrets  # noqa: E402
 
 SAMPLE_CURL = (
     "curl 'http://10.21.1.1/eportal/InterFace.do?method=login' \\\n"
@@ -114,6 +115,39 @@ def main() -> int:
     root.update()
     if app._progress_on:
         problems.append("空闲了进度条还挂着")
+
+    # 就绪判断：账号密码没齐时两个主按钮灰着，并说清为什么灰
+    saved_creds = app.old_creds
+    app.old_creds = secrets.Credentials()
+    app.user_var.set("")
+    app.pass_var.set("")
+    app._refresh_readiness()
+    root.update()
+    if not (app.test_btn.instate(["disabled"]) and app.save_btn.instate(["disabled"])):
+        problems.append("账号密码都空着，测试/保存按钮却没灰")
+    if "第 ② 步" not in app.shortcut_hint.cget("text"):
+        problems.append(f"按钮灰着时没说明原因：{app.shortcut_hint.cget('text')}")
+    app.user_var.set("20230001")
+    app._refresh_readiness()
+    root.update()
+    if not app.test_btn.instate(["disabled"]):
+        problems.append("只填了账号没填密码，测试按钮不该亮")
+    app.pass_var.set("secret")
+    app._refresh_readiness()
+    root.update()
+    if app.test_btn.instate(["disabled"]) or app.save_btn.instate(["disabled"]):
+        problems.append("账号密码都齐了，测试/保存按钮还是灰的")
+    # 已经存过密码的人，密码框留空也算齐
+    app.old_creds = secrets.Credentials(username="20230001", password="x")
+    app.pass_var.set("")
+    app._refresh_readiness()
+    if app.test_btn.instate(["disabled"]):
+        problems.append("存过密码、密码框留空，按钮却灰着")
+    app.old_creds = saved_creds
+    app.user_var.set("")
+    app.pass_var.set("")
+    app._refresh_readiness()
+    root.update()
 
     # 大肥鱼：吉祥物 + 状态灯
     if app.mascot.winfo_width() < 40 or app.mascot.winfo_height() < 40:

@@ -434,6 +434,7 @@ class SetupApp:
         style.configure("Card.TLabel", background=COLOR["card"], foreground=COLOR["text"])
         style.configure("Hint.TLabel", background=COLOR["bg"], foreground=COLOR["muted"], font=FONT_SMALL)
         style.configure("CardHint.TLabel", background=COLOR["card"], foreground=COLOR["muted"], font=FONT_SMALL)
+        style.configure("HintWarn.TLabel", background=COLOR["bg"], foreground=COLOR["warn"], font=FONT_SMALL)
 
         style.configure(
             "Card.TLabelframe",
@@ -511,8 +512,8 @@ class SetupApp:
         )
         style.map(
             "Primary.TButton",
-            background=[("disabled", "#9db9f0"), ("pressed", COLOR["accent_dark"]), ("active", COLOR["accent_dark"])],
-            foreground=[("disabled", "#f2f6ff")],
+            background=[("disabled", "#e2e7ee"), ("pressed", COLOR["accent_dark"]), ("active", COLOR["accent_dark"])],
+            foreground=[("disabled", "#9aa3af")],
         )
         style.configure(
             "Save.TButton",
@@ -525,8 +526,8 @@ class SetupApp:
         )
         style.map(
             "Save.TButton",
-            background=[("disabled", "#8fb8a6"), ("pressed", "#0b6240"), ("active", "#0b6240")],
-            foreground=[("disabled", "#f2f7f4")],
+            background=[("disabled", "#e2e7ee"), ("pressed", "#0b6240"), ("active", "#0b6240")],
+            foreground=[("disabled", "#9aa3af")],
         )
         style.configure(
             "Mini.TButton",
@@ -967,6 +968,11 @@ class SetupApp:
         self.pass_entry = ttk.Entry(card, textvariable=self.pass_var, show="●", font=FONT_MONO)
         self.pass_entry.grid(row=0, column=3, sticky="ew", padx=(8, 0))
 
+        # 边打边判断「够不够点测试」，回车直接开测——这一栏是整页唯一的必填项
+        for entry in (self.user_entry, self.pass_entry):
+            entry.bind("<KeyRelease>", lambda _e: self._refresh_readiness())
+            entry.bind("<Return>", lambda _e: self._on_enter_test())
+
         self.show_pass_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             card,
@@ -1025,9 +1031,8 @@ class SetupApp:
         )
         self.autostart_check.pack(side="right")
 
-        ttk.Label(box, text=SHORTCUT_HINT, style="Hint.TLabel").grid(
-            row=1, column=0, columnspan=2, sticky="w", pady=(6, 0)
-        )
+        self.shortcut_hint = ttk.Label(box, text=SHORTCUT_HINT, style="Hint.TLabel")
+        self.shortcut_hint.grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
         self._actions_box = box
 
     def _build_log(self, parent, row: int) -> None:
@@ -1089,6 +1094,9 @@ class SetupApp:
             fg=COLOR["muted"],
         )
         self.footer_left.pack(side="left")
+        # 网络状态：检查过一次再说话，没检查就老实说「未检查」
+        self.net_label = tk.Label(inner, text="网络：未检查", font=FONT_SMALL, bg=COLOR["bar"], fg=COLOR["muted"])
+        self.net_label.pack(side="left", padx=(10, 0))
         self.footer_right = tk.Label(
             inner,
             text=f"双击「一键登录.vbs」即可登录 · v{APP_VERSION}",
@@ -1139,6 +1147,48 @@ class SetupApp:
     def _toggle_password(self) -> None:
         self.pass_entry.configure(show="" if self.show_pass_var.get() else "●")
 
+    # ------------------------------------------------------------ 就绪状态
+
+    def _ready_state(self) -> tuple[bool, str]:
+        """够不够点「测试登录 / 保存设置」——只有一个理由会不够：账号或密码没齐。"""
+        username = self.user_var.get().strip()
+        password = self.pass_var.get()
+        if not username:
+            return False, "第 ② 步还空着：填上账号就能测试和保存（③ 请求细节可以最后再管）"
+        if not password and not (self.old_creds.complete and self.old_creds.username == username):
+            return False, "第 ② 步还差密码：填上就能测试和保存，密码只存在这台机器上"
+        return True, SHORTCUT_HINT
+
+    def _refresh_readiness(self) -> None:
+        """按钮该亮就亮、该灰就灰，并把「为什么灰着」写在原来那行快捷键提示上。"""
+        ready, hint = self._ready_state()
+        if getattr(self, "testing", False):
+            return  # 正在测的时候别去动按钮状态，免得把它从「测试中…」里抢回来
+        for btn in (getattr(self, "test_btn", None), getattr(self, "save_btn", None)):
+            if btn is not None:
+                btn.state(["!disabled"] if ready else ["disabled"])
+        label = getattr(self, "shortcut_hint", None)
+        if label is not None:
+            label.configure(text=hint, style="Hint.TLabel" if ready else "HintWarn.TLabel")
+
+    def _on_enter_test(self) -> str:
+        """在账号/密码框里按回车 = 点测试登录（按钮灰着就别乱跑，只把焦点送过去）。"""
+        ready, _hint = self._ready_state()
+        if ready:
+            self.on_test()
+        elif not self.user_var.get().strip():
+            self.user_entry.focus_set()
+        else:
+            self.pass_entry.focus_set()
+        return "break"
+
+    def _set_net(self, text: str, kind: str = "idle") -> None:
+        label = getattr(self, "net_label", None)
+        if label is None:
+            return
+        color = {"ok": COLOR["ok"], "warn": COLOR["warn"], "err": COLOR["err"]}.get(kind, COLOR["muted"])
+        label.configure(text=text, fg=color)
+
     # ------------------------------------------------------------ 配置 <-> 界面
 
     def _load_into_ui(self, cfg: dict) -> None:
@@ -1166,6 +1216,7 @@ class SetupApp:
         self._update_body_hint()
         self._update_cred_hint()
         self._refresh_detail_summary()
+        self._refresh_readiness()
 
     def _update_cred_hint(self) -> None:
         """已经存过密码就直说，省得用户以为要重打一遍。"""
@@ -1445,6 +1496,12 @@ class SetupApp:
                 online, why = net.online()
                 self.log(f"本机 IP：{ip}", "info")
                 self.log(f"联网状态：{why}", "ok" if online else "warn")
+                self.root.after(
+                    0,
+                    lambda ok=online: self._set_net(
+                        "网络：已联网" if ok else "网络：未联网", "ok" if ok else "warn"
+                    ),
+                )
                 if not target:
                     self.root.after(0, lambda: self._set_status("网络已检查", "idle"))
                     return
@@ -1536,6 +1593,7 @@ class SetupApp:
                     self.log(f"✓ 登录成功：{result.message}", "ok")
                     self.log(f"  耗时 {time.time() - started:.1f}s，尝试 {result.attempts} 次", "info")
                     self.root.after(0, lambda: self._set_status("登录成功", "ok"))
+                    self.root.after(0, lambda: self._set_net("网络：已联网", "ok"))
                 else:
                     self.log(f"✗ 登录失败：{result.message}", "err")
                     if result.hint:
@@ -1553,6 +1611,7 @@ class SetupApp:
                 def done():
                     self.testing = False
                     self.test_btn.configure(state="normal", text="测试登录")
+                    self._refresh_readiness()
                 self.root.after(0, done)
 
         threading.Thread(target=work, daemon=True).start()
@@ -1588,6 +1647,7 @@ class SetupApp:
         self.log(f"✓ 配置已保存：{paths.rel(path)}", "ok")
         self.log(f"✓ 账号密码已加密保存：{paths.rel(paths.CREDENTIAL_FILE)}", "ok")
         self.log("现在可以双击桌面上的「校园网一键登录」了。", "info")
+        self._refresh_readiness()
 
     def on_shortcut(self) -> None:
         try:
